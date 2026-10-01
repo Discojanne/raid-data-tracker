@@ -2,8 +2,10 @@ package com.raidtracker.filereadwriter;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import com.google.inject.Inject;
@@ -28,8 +30,12 @@ import net.runelite.client.util.Text;
 @Slf4j
 public class FileReadWriter {
 
+	public static final String LEAGUE_SUFFIX = "-league";
+
 	@Getter
 	private String username;
+	@Getter
+	private boolean league;
 	private String coxDir;
 	private String tobDir;
 	private String toaDir;
@@ -39,16 +45,57 @@ public class FileReadWriter {
     @Setter
 	private Gson gson;
 
+	// New Chambers lines write these keys only. Theatre and Tombs still write the whole object.
+	// A later Chambers field has to be added here or it will not be stored.
+	private static final String[] CHAMBERS_LOG_FIELDS = {
+		"challengeMode",
+		"FreeForAll",
+		"upperTime",
+		"middleTime",
+		"lowerTime",
+		"raidTime",
+		"tektonTime",
+		"crabsTime",
+		"iceDemonTime",
+		"shamansTime",
+		"vanguardsTime",
+		"thievingTime",
+		"vespulaTime",
+		"tightropeTime",
+		"guardiansTime",
+		"vasaTime",
+		"mysticsTime",
+		"muttadilesTime",
+		"olmMageHandTimes",
+		"olmPhaseTimes",
+		"olmHeadTime",
+		"deaths",
+		"extraDrops",
+		"uniques",
+		"totalPoints",
+		"personalPoints",
+		"teamSize",
+		"completionCount",
+		"specialLoot",
+		"specialLootReceiver",
+		"specialLootInOwnName",
+		"specialLootValue",
+		"kitReceiver",
+		"dustReceiver",
+		"petReceiver",
+		"petInMyName",
+		"lootSplitReceived",
+		"lootSplitPaid",
+		"lootList",
+		"uniqueID",
+		"killCountID",
+		"date"
+	};
+
     public void writeToFile(RaidTracker raidTracker) {
-        String fileName;
-		if (raidTracker.isInTheatreOfBlood()) {
-            fileName = getRaidFileName(RaidType.TOB);
-		} else if (raidTracker.isInTombsOfAmascut()) {
-            fileName = getRaidFileName(RaidType.TOA);
-		} else if (raidTracker.isInRaidChambers()) {
-            fileName = getRaidFileName(RaidType.COX);
-		} else {
-            fileName = getRaidFileName(null);
+        RaidType raidType = storedRaidType(raidTracker);
+        String fileName = getRaidFileName(raidType);
+		if (raidType == null) {
 			log.warn("writeToFile called without an inRaid flag set.", new IllegalStateException());
 		}
 
@@ -57,7 +104,7 @@ public class FileReadWriter {
 			//use json format so serializing and deserializing is easy
 			JsonParser parser = new JsonParser();
 			FileWriter fw = new FileWriter(fileName,true); //the true will append the new data
-			gson.toJson(parser.parse(getJSONString(raidTracker, gson, parser)), fw);
+			gson.toJson(parser.parse(getJSONString(raidTracker, gson, parser, raidType)), fw);
 			fw.append("\n");
 			fw.close();
         } catch (IOException ioe) {
@@ -65,7 +112,27 @@ public class FileReadWriter {
 		}
 	}
 
-    public String getJSONString(RaidTracker raidTracker, Gson gson, JsonParser parser) {
+	public String getJSONString(RaidTracker raidTracker, Gson gson, JsonParser parser) {
+		return getJSONString(raidTracker, gson, parser, storedRaidType(raidTracker));
+	}
+
+    public String getJSONString(RaidTracker raidTracker, Gson gson, JsonParser parser, RaidType raidType) {
+		if (raidTracker.getOlmMageHandTimes() == null) {
+			raidTracker.setOlmMageHandTimes(new ArrayList<>());
+		}
+		if (raidTracker.getOlmPhaseTimes() == null) {
+			raidTracker.setOlmPhaseTimes(new ArrayList<>());
+		}
+		if (raidTracker.getDeaths() == null) {
+			raidTracker.setDeaths(new ArrayList<>());
+		}
+		if (raidTracker.getExtraDrops() == null) {
+			raidTracker.setExtraDrops(new ArrayList<>());
+		}
+		if (raidTracker.getUniques() == null) {
+			raidTracker.setUniques(new ArrayList<>());
+		}
+
 		JsonObject RTJson =  parser.parse(gson.toJson(raidTracker)).getAsJsonObject();
 
 		List<RaidTrackerItem> lootList = raidTracker.getLootList();
@@ -82,8 +149,61 @@ public class FileReadWriter {
 
 		//-------------------------------------------------------------------------------------------------------------
 
+		if (raidType == RaidType.COX) {
+			JsonObject chambersJson = new JsonObject();
+			for (String field : CHAMBERS_LOG_FIELDS) {
+				if (includeChambersField(field, RTJson.get(field))) {
+					chambersJson.add(field, RTJson.get(field));
+				}
+			}
+			RTJson = chambersJson;
+		}
+
 		//massive bodge, works for now
         return RTJson.toString().replace("\\\"", "\"").replace("\"[", "[").replace("]\"", "]");
+	}
+
+	private boolean includeChambersField(String field, JsonElement value) {
+		if (value == null || value.isJsonNull()) {
+			return false;
+		}
+		if ("deaths".equals(field) || "uniques".equals(field) || "extraDrops".equals(field)) {
+			return value.isJsonArray() && value.getAsJsonArray().size() > 0;
+		}
+		if (!value.isJsonPrimitive()) {
+			return true;
+		}
+		JsonPrimitive primitive = value.getAsJsonPrimitive();
+		if ("specialLoot".equals(field) || "specialLootReceiver".equals(field)
+			|| "kitReceiver".equals(field) || "dustReceiver".equals(field) || "petReceiver".equals(field)) {
+			return primitive.isString() && !primitive.getAsString().isEmpty();
+		}
+		if ("specialLootInOwnName".equals(field) || "petInMyName".equals(field) || "FreeForAll".equals(field)) {
+			return primitive.isBoolean() && primitive.getAsBoolean();
+		}
+		if ("specialLootValue".equals(field) || "lootSplitReceived".equals(field) || "lootSplitPaid".equals(field)) {
+			return primitive.isNumber() && primitive.getAsInt() >= 0;
+		}
+		return true;
+	}
+
+	private RaidType storedRaidType(RaidTracker raidTracker) {
+		if (raidTracker.isInTheatreOfBlood()) {
+			return RaidType.TOB;
+		}
+		if (raidTracker.isInTombsOfAmascut()) {
+			return RaidType.TOA;
+		}
+		if (raidTracker.isInRaidChambers()) {
+			return RaidType.COX;
+		}
+		return null;
+	}
+
+	public void restoreRaidType(RaidTracker raidTracker, RaidType raidType) {
+		if (raidType == RaidType.COX && raidTracker != null) {
+			raidTracker.setInRaidChambers(true);
+		}
 	}
 
     public ArrayList<RaidTracker> readFromFile(String alternateFile, RaidType raidType) {
@@ -108,6 +228,7 @@ public class FileReadWriter {
 
 				try {
 					RaidTracker parsed = gson.fromJson(parser.parse(line), RaidTracker.class);
+					restoreRaidType(parsed, raidType);
 					RTList.add(parsed);
 				} catch (JsonSyntaxException e) {
 					log.warn("Bad line: {}", line);
@@ -139,7 +260,7 @@ public class FileReadWriter {
     public void createFolders() {
 		File dir = new File(RUNELITE_DIR, "raid-data tracker");
 		IGNORE_RESULT(dir.mkdir());
-		dir = new File(dir, username);
+		dir = new File(dir, accountDirectoryName(username, league));
 		IGNORE_RESULT(dir.mkdir());
 		File dir_cox = new File(dir, "cox");
 		File dir_tob = new File(dir, "tob");
@@ -165,8 +286,20 @@ public class FileReadWriter {
 	}
 
 	public void updateUsername(final String username) {
+		updateUsername(username, false);
+	}
+
+	public void updateUsername(final String username, final boolean league) {
 		this.username = username;
+		this.league = league;
 		createFolders();
+	}
+
+	public static String accountDirectoryName(String username, boolean league) {
+		if (username == null) {
+			return null;
+		}
+		return league ? username + LEAGUE_SUFFIX : username;
 	}
 
 	// Used for making sure ToA loot and points is accurate
@@ -187,7 +320,7 @@ public class FileReadWriter {
 					RT = raidTracker;
 				}
 
-				gson.toJson(parser.parse(getJSONString(RT, gson, parser)), fw);
+				gson.toJson(parser.parse(getJSONString(RT, gson, parser, raidType)), fw);
 
 				fw.append("\n");
 			}
@@ -209,11 +342,12 @@ public class FileReadWriter {
 					RT.setSpecialLootInOwnName(true);
                 } else {
 					// bit of a wonky check, so try to avoid with lootsplitpaid if possible
-                    RT.setSpecialLootInOwnName(!RT.getLootList().isEmpty()
-                            && RT.getLootList().get(0).getName().equalsIgnoreCase(RT.getSpecialLoot()));
+                    String specialLoot = RT.getSpecialLoot() == null ? "" : RT.getSpecialLoot();
+                    RT.setSpecialLootInOwnName(RT.getLootList() != null && !RT.getLootList().isEmpty()
+                            && RT.getLootList().get(0).getName().equalsIgnoreCase(specialLoot));
 				}
 
-				gson.toJson(parser.parse(getJSONString(RT, gson, parser)), fw);
+				gson.toJson(parser.parse(getJSONString(RT, gson, parser, raidType)), fw);
 
 				fw.append("\n");
 			}
@@ -255,6 +389,11 @@ public class FileReadWriter {
 
     public void IGNORE_RESULT(boolean b) {
     }
+
+	/** The Chambers folder for the current login, or null before that folder exists. */
+	public String getCoxDirectory() {
+		return coxDir;
+	}
 
     public String getRaidFileName(RaidType raidType) {
         final String DATA_FILE_NAME = "/raid_tracker_data.log";

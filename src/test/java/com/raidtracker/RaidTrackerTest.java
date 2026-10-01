@@ -1,5 +1,7 @@
 package com.raidtracker;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonParser;
 import com.google.inject.Guice;
 import com.google.inject.Inject;
 import com.raidtracker.filereadwriter.FileReadWriter;
@@ -10,6 +12,7 @@ import net.runelite.api.Client;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.Player;
+import net.runelite.api.WorldType;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.config.ConfigManager;
@@ -25,11 +28,15 @@ import com.google.inject.testing.fieldbinder.Bind;
 import com.google.inject.testing.fieldbinder.BoundFieldModule;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @RunWith(MockitoJUnitRunner.class)
@@ -425,6 +432,32 @@ public class RaidTrackerTest extends TestCase
 	}
 
 	@Test
+	public void TestPetBeforeRaidCompleteIsIgnored()
+	{
+		RaidTracker tombs = new RaidTracker();
+		tombs.setInTombsOfAmascut(true);
+
+		ChatMessage message = new ChatMessage(
+			null,
+			ChatMessageType.GAMEMESSAGE,
+			"",
+			"Canvasba would have been followed by Tumeken's guardian",
+			"",
+			0);
+		raidTrackerPlugin.checkChatMessage(message, tombs);
+
+		assertTrue(tombs.petReceiver.isEmpty());
+		assertTrue(tombs.getUniques().isEmpty());
+
+		RaidTracker chambers = new RaidTracker();
+		chambers.setInRaidChambers(true);
+		raidTrackerPlugin.checkChatMessage(message, chambers);
+
+		assertTrue(chambers.petReceiver.isEmpty());
+		assertTrue(chambers.getUniques().isEmpty());
+	}
+
+	@Test
 	public void TestDustAndKitRecipients()
 	{
 		RaidTracker raidTracker = new RaidTracker();
@@ -527,6 +560,334 @@ public class RaidTrackerTest extends TestCase
 		assertEquals(1198653000, lootList.get(0).getPrice());
 
 
+	}
+
+	@Test
+	public void TestGuardiansUsesTheRoomDuration()
+	{
+		RaidTracker raidTracker = new RaidTracker();
+		raidTracker.setInRaidChambers(true);
+
+		ChatMessage message = new ChatMessage(
+			null,
+			ChatMessageType.GAMEMESSAGE,
+			"",
+			"Combat room 'Guardians' complete! Duration: 1:47 Total: 16:16",
+			"",
+			0);
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+
+		assertEquals(107, raidTracker.getGuardiansTime());
+		assertEquals(-1, raidTracker.getRaidTime());
+	}
+
+	@Test
+	public void TestFloorLineStripsHighlightAndKeepsTheLastTime()
+	{
+		RaidTracker raidTracker = new RaidTracker();
+		raidTracker.setInRaidChambers(true);
+
+		ChatMessage message = new ChatMessage(
+			null,
+			ChatMessageType.GAMEMESSAGE,
+			"",
+			"@mes_hl_mag@Middle level complete! Duration: 7:53 Total: 20:50",
+			"",
+			0);
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+
+		assertEquals(1250, raidTracker.getMiddleTime());
+
+		message.setMessage("@mes_hl_mag@Lower level complete! Duration: </col><col=ff0000>20:06</col>");
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+
+		assertEquals(1206, raidTracker.getLowerTime());
+		assertEquals(-1, raidTracker.getUpperTime());
+		assertEquals(-1, raidTracker.getRaidTime());
+	}
+
+	@Test
+	public void TestOlmSplitsUseTheRaidClock()
+	{
+		RaidTracker raidTracker = raidTrackerPlugin.getRaidTracker();
+		raidTracker.setInRaidChambers(true);
+		raidTracker.setTeamSize(1);
+
+		raidTrackerPlugin.olmPhaseStarted(450);
+		raidTrackerPlugin.mageHandDown(500);
+		raidTrackerPlugin.meleeHandDown(560);
+		raidTrackerPlugin.olmPhaseStarted(570);
+		raidTrackerPlugin.mageHandDown(620);
+		raidTrackerPlugin.meleeHandDown(700);
+		raidTrackerPlugin.olmPhaseStarted(710);
+		raidTrackerPlugin.mageHandDown(760);
+		raidTrackerPlugin.meleeHandDown(800);
+		raidTrackerPlugin.stampOlmHead(900);
+
+		assertEquals(2, raidTracker.getOlmMageHandTimes().size());
+		assertEquals(30, raidTracker.getOlmMageHandTimes().get(0).intValue());
+		assertEquals(30, raidTracker.getOlmMageHandTimes().get(1).intValue());
+		assertEquals(3, raidTracker.getOlmPhaseTimes().size());
+		assertEquals(66, raidTracker.getOlmPhaseTimes().get(0).intValue());
+		assertEquals(78, raidTracker.getOlmPhaseTimes().get(1).intValue());
+		assertEquals(54, raidTracker.getOlmPhaseTimes().get(2).intValue());
+		assertEquals(60, raidTracker.getOlmHeadTime());
+		assertEquals(-1, raidTracker.getRaidTime());
+		assertEquals(-1, raidTracker.getUpperTime());
+		assertEquals(-1, raidTracker.getMiddleTime());
+		assertEquals(-1, raidTracker.getLowerTime());
+		assertEquals(0, raidTracker.getPersonalDeathCount());
+	}
+
+	@Test
+	public void TestChambersDeathRowKeepsRoomAndPoints()
+	{
+		RaidTracker raidTracker = raidTrackerPlugin.getRaidTracker();
+		raidTracker.setInRaidChambers(true);
+
+		raidTrackerPlugin.notePersonalPoints(40000);
+		ChatMessage message = new ChatMessage(
+			null,
+			ChatMessageType.GAMEMESSAGE,
+			"",
+			"Oh dear, you are dead!",
+			"",
+			0);
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+		raidTrackerPlugin.notePersonalPoints(32000);
+
+		assertEquals(1, raidTracker.getDeaths().size());
+		assertEquals("Tekton", raidTracker.getDeaths().get(0).getRoom());
+		assertEquals(8000, raidTracker.getDeaths().get(0).getPointsLost());
+		assertEquals(0, raidTracker.getPersonalDeathCount());
+
+		message.setMessage("Combat room 'Tekton' complete! Duration: 1:08");
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+		message.setMessage("Oh dear, you are dead!");
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+		raidTrackerPlugin.notePersonalPoints(25000);
+
+		assertEquals("Crabs", raidTracker.getDeaths().get(1).getRoom());
+		assertEquals(7000, raidTracker.getDeaths().get(1).getPointsLost());
+
+		raidTracker.setChallengeMode(true);
+		raidTrackerPlugin.settleChambersDeathRooms(raidTracker);
+		assertEquals("Tekton", raidTracker.getDeaths().get(0).getRoom());
+		assertEquals("Crabs", raidTracker.getDeaths().get(1).getRoom());
+
+		raidTracker.setChallengeMode(false);
+		raidTrackerPlugin.settleChambersDeathRooms(raidTracker);
+		assertNull(raidTracker.getDeaths().get(0).getRoom());
+		assertNull(raidTracker.getDeaths().get(1).getRoom());
+		assertEquals(8000, raidTracker.getDeaths().get(0).getPointsLost());
+		assertEquals(7000, raidTracker.getDeaths().get(1).getPointsLost());
+		assertEquals(0, raidTracker.getPersonalDeathCount());
+
+		Gson gson = new Gson();
+		FileReadWriter writer = new FileReadWriter();
+		writer.setGson(gson);
+		String json = writer.getJSONString(raidTracker, gson, new JsonParser());
+		assertFalse(json.contains("\"room\""));
+		assertTrue(json.contains("\"pointsLost\":8000"));
+		assertFalse(json.contains("\"personalDeathCount\""));
+	}
+
+	@Test
+	public void TestSecondChambersDropLandsInCoxLogWithItsOwnPrice()
+	{
+		RaidTracker raidTracker = raidTrackerPlugin.getRaidTracker();
+		raidTracker.setInRaidChambers(true);
+		raidTracker.setRaidComplete(true);
+		raidTracker.setTeamSize(3);
+
+		Player player = mock(Player.class);
+		when(client.getLocalPlayer()).thenReturn(player);
+		when(player.getName()).thenReturn("Canvasba");
+		when(itemManager.search(anyString())).thenAnswer(invocation -> {
+			ItemPrice price = new ItemPrice();
+			String name = invocation.getArgument(0);
+			price.setName(name);
+			price.setPrice(name.toLowerCase().contains("twisted") ? 999 : 111);
+			List<ItemPrice> prices = new ArrayList<>();
+			prices.add(price);
+			return prices;
+		});
+
+		RaidTrackerPanel panel = mock(RaidTrackerPanel.class);
+		raidTrackerPlugin.setPanel(panel);
+		FileReadWriter fw = mock(FileReadWriter.class);
+		raidTrackerPlugin.setFw(fw);
+
+		ChatMessage message = new ChatMessage(
+			null,
+			ChatMessageType.FRIENDSCHATNOTIFICATION,
+			"",
+			"Canvasba - Kodai insignia",
+			"",
+			0);
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+
+		message.setMessage("Someone Else - Twisted bow");
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+
+		verify(fw, never()).writeToFile(any());
+
+		assertEquals(2, raidTracker.getUniques().size());
+		assertEquals("Kodai insignia", raidTracker.getUniques().get(0).getItem());
+		assertEquals(111, raidTracker.getUniques().get(0).getValue().intValue());
+		assertEquals("Canvasba", raidTracker.getUniques().get(0).getReceiver());
+		assertTrue(raidTracker.getUniques().get(0).isOwn());
+		assertEquals("Twisted bow", raidTracker.getUniques().get(1).getItem());
+		assertEquals(999, raidTracker.getUniques().get(1).getValue().intValue());
+		assertEquals("Someone Else", raidTracker.getUniques().get(1).getReceiver());
+		assertFalse(raidTracker.getUniques().get(1).isOwn());
+		assertTrue(raidTracker.getSpecialLoot().isEmpty());
+		assertEquals(0, raidTracker.getPersonalDeathCount());
+	}
+
+	@Test
+	public void TestNewFieldsRoundTripAndOldLinesStillLoad()
+	{
+		RaidTracker raid = new RaidTracker();
+		raid.setInRaidChambers(true);
+		raid.setTektonTime(68);
+		raid.setGuardiansTime(107);
+		raid.setOlmHeadTime(60);
+		raid.getOlmMageHandTimes().add(30);
+		raid.getOlmPhaseTimes().add(66);
+		UniqueDrop drop = new UniqueDrop();
+		drop.setItem("Twisted bow");
+		drop.setReceiver("Someone Else");
+		drop.setValue(999);
+		raid.getUniques().add(drop);
+		ChambersDeath death = new ChambersDeath();
+		death.setRoom("Tekton");
+		death.setPointsLost(8000);
+		raid.getDeaths().add(death);
+
+		Gson gson = new Gson();
+		FileReadWriter writer = new FileReadWriter();
+		writer.setGson(gson);
+		String json = writer.getJSONString(raid, gson, new JsonParser());
+		assertFalse(json.contains("\"accountHash\""));
+		assertFalse(json.contains("\"profileType\""));
+		assertFalse(json.contains("\"chestOpened\""));
+		assertFalse(json.contains("\"raidComplete\""));
+		assertFalse(json.contains("\"loggedIn\""));
+		assertFalse(json.contains("\"inRaidChambers\""));
+		assertFalse(json.contains("\"inTheatreOfBlood\""));
+		assertFalse(json.contains("\"inTombsOfAmascut\""));
+		assertFalse(json.contains("\"raidLevel\""));
+		assertFalse(json.contains("\"percentage\""));
+		assertFalse(json.contains("\"maidenTime\""));
+		assertFalse(json.contains("\"tobCompTime\""));
+		assertFalse(json.contains("\"apmekenTime\""));
+		assertFalse(json.contains("\"toaCompTime\""));
+		assertFalse(json.contains("\"totalTeamDeathCount\""));
+		assertFalse(json.contains("\"personalDeathCount\""));
+		assertFalse(json.contains("\"chambersDeaths\""));
+		assertTrue(json.contains("\"deaths\""));
+		assertTrue(json.contains("\"completionCount\""));
+		assertTrue(json.contains("\"killCountID\""));
+		assertTrue(json.contains("\"uniques\""));
+		assertFalse(json.contains("\"specialLoot\""));
+		assertFalse(json.contains("\"kitReceiver\""));
+		assertFalse(json.contains("\"dustReceiver\""));
+		assertFalse(json.contains("\"petReceiver\""));
+		assertFalse(json.contains("\"extraDrops\""));
+
+		RaidTracker deathless = new RaidTracker();
+		deathless.setInRaidChambers(true);
+		String deathlessJson = writer.getJSONString(deathless, gson, new JsonParser());
+		assertFalse(deathlessJson.contains("\"deaths\""));
+
+		RaidTracker loaded = gson.fromJson(new JsonParser().parse(json), RaidTracker.class);
+
+		assertEquals(68, loaded.getTektonTime());
+		assertEquals(107, loaded.getGuardiansTime());
+		assertEquals(60, loaded.getOlmHeadTime());
+		assertEquals(30, loaded.getOlmMageHandTimes().get(0).intValue());
+		assertEquals(66, loaded.getOlmPhaseTimes().get(0).intValue());
+		assertEquals("Tekton", loaded.getDeaths().get(0).getRoom());
+		assertEquals(8000, loaded.getDeaths().get(0).getPointsLost());
+		assertEquals("Twisted bow", loaded.getUniques().get(0).getItem());
+		assertEquals("Someone Else", loaded.getUniques().get(0).getReceiver());
+		assertEquals(999, loaded.getUniques().get(0).getValue().intValue());
+		assertFalse(loaded.isInRaidChambers());
+		writer.restoreRaidType(loaded, RaidType.COX);
+		assertTrue(loaded.isInRaidChambers());
+		assertEquals(0, loaded.getPersonalDeathCount());
+
+		RaidTracker theatre = new RaidTracker();
+		theatre.setInTheatreOfBlood(true);
+		theatre.setMaidenTime(40);
+		String theatreJson = writer.getJSONString(theatre, gson, new JsonParser());
+		assertTrue(theatreJson.contains("\"maidenTime\":40"));
+		assertTrue(theatreJson.contains("\"inTheatreOfBlood\":true"));
+
+		RaidTracker legacy = new RaidTracker();
+		legacy.setInRaidChambers(true);
+		legacy.setSpecialLoot("Twisted bow");
+		legacy.setSpecialLootReceiver("Canvasba");
+		legacy.setSpecialLootInOwnName(true);
+		legacy.setSpecialLootValue(999);
+		String legacyJson = writer.getJSONString(legacy, gson, new JsonParser());
+		assertTrue(legacyJson.contains("\"specialLoot\":\"Twisted bow\""));
+		assertTrue(legacyJson.contains("\"specialLootReceiver\":\"Canvasba\""));
+
+		String oldDeaths = "{\"chambersDeaths\":[{\"room\":\"Crabs\",\"pointsLost\":100}]}";
+		RaidTracker oldDeathsRaid = gson.fromJson(oldDeaths, RaidTracker.class);
+		assertEquals("Crabs", oldDeathsRaid.getDeaths().get(0).getRoom());
+		assertEquals(100, oldDeathsRaid.getDeaths().get(0).getPointsLost());
+
+		String oldLine = "{\"tektonTime\":68,\"personalDeathCount\":0,\"inTheatreOfBlood\":true,\"inTombsOfAmascut\":true,\"raidTime\":100,\"maidenTime\":40}";
+		RaidTracker old = gson.fromJson(oldLine, RaidTracker.class);
+		assertEquals(68, old.getTektonTime());
+		assertEquals(0, old.getPersonalDeathCount());
+		assertTrue(old.isInTheatreOfBlood());
+		assertTrue(old.isInTombsOfAmascut());
+		assertEquals(100, old.getRaidTime());
+		assertEquals(40, old.getMaidenTime());
+	}
+
+	@Test
+	public void TestLeagueLogUsesItsOwnFolder()
+	{
+		assertEquals("Canvasba", FileReadWriter.accountDirectoryName("Canvasba", false));
+		assertEquals("Canvasba-league", FileReadWriter.accountDirectoryName("Canvasba", true));
+		assertNull(FileReadWriter.accountDirectoryName(null, true));
+
+		Client leagueClient = mock(Client.class);
+		when(leagueClient.getWorldType()).thenReturn(EnumSet.of(WorldType.MEMBERS, WorldType.SEASONAL));
+		assertEquals(Boolean.TRUE, WorldUtils.playerOnLeagueWorld(leagueClient));
+
+		Client normalClient = mock(Client.class);
+		when(normalClient.getWorldType()).thenReturn(EnumSet.of(WorldType.MEMBERS));
+		assertEquals(Boolean.FALSE, WorldUtils.playerOnLeagueWorld(normalClient));
+
+		Client deadmanClient = mock(Client.class);
+		when(deadmanClient.getWorldType()).thenReturn(EnumSet.of(WorldType.MEMBERS, WorldType.DEADMAN));
+		assertEquals(Boolean.FALSE, WorldUtils.playerOnLeagueWorld(deadmanClient));
+		assertTrue(WorldUtils.playerOnUntrackedWorld(deadmanClient));
+
+		Client betaClient = mock(Client.class);
+		when(betaClient.getWorldType()).thenReturn(EnumSet.of(WorldType.MEMBERS, WorldType.BETA_WORLD));
+		assertTrue(WorldUtils.playerOnUntrackedWorld(betaClient));
+
+		Client tournamentClient = mock(Client.class);
+		when(tournamentClient.getWorldType()).thenReturn(EnumSet.of(WorldType.MEMBERS, WorldType.TOURNAMENT_WORLD));
+		assertTrue(WorldUtils.playerOnUntrackedWorld(tournamentClient));
+
+		Client pvpClient = mock(Client.class);
+		when(pvpClient.getWorldType()).thenReturn(EnumSet.of(WorldType.MEMBERS, WorldType.PVP));
+		assertFalse(WorldUtils.playerOnUntrackedWorld(pvpClient));
+		assertFalse(WorldUtils.playerOnUntrackedWorld(leagueClient));
+		assertFalse(WorldUtils.playerOnUntrackedWorld(normalClient));
+
+		Client unknownClient = mock(Client.class);
+		when(unknownClient.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
+		assertNull(WorldUtils.playerOnLeagueWorld(unknownClient));
+		assertFalse(WorldUtils.playerOnUntrackedWorld(unknownClient));
 	}
 
 }

@@ -1,6 +1,7 @@
 package com.raidtracker.ui;
 
 import com.raidtracker.RaidTracker;
+import com.raidtracker.UniqueDrop;
 import lombok.Getter;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.ui.ColorScheme;
@@ -39,13 +40,15 @@ public class SplitChanger extends JPanel {
 
     @Getter
     public final RaidTracker raidTracker;
+    private final UniqueDrop drop;
     private final ItemManager itemManager;
     private final RaidTrackerPanel raidTrackerPanel;
     private boolean locked = false;
 
-    public SplitChanger(final ItemManager itemManager, final RaidTracker raidTracker, final RaidTrackerPanel raidTrackerPanel) {
+    public SplitChanger(final ItemManager itemManager, final RaidTracker raidTracker, final UniqueDrop drop, final RaidTrackerPanel raidTrackerPanel) {
         this.itemManager = itemManager;
         this.raidTracker = raidTracker;
+        this.drop = drop;
         this.raidTrackerPanel = raidTrackerPanel;
 
         this.setBackground(ColorScheme.DARKER_GRAY_COLOR);
@@ -57,7 +60,7 @@ public class SplitChanger extends JPanel {
     }
 
     private JPanel getImagePanel() {
-        AsyncBufferedImage image = itemManager.getImage(getByName(raidTracker.getSpecialLoot()).getItemID(), 1, false);
+        AsyncBufferedImage image = itemManager.getImage(getByName(lootName()).getItemID(), 1, false);
 
         JPanel iconWrapper = new JPanel();
         iconWrapper.setLayout(new BoxLayout(iconWrapper, BoxLayout.Y_AXIS));
@@ -68,7 +71,7 @@ public class SplitChanger extends JPanel {
         icon.setVerticalAlignment(SwingConstants.CENTER);
         icon.setHorizontalAlignment(SwingConstants.CENTER);
         icon.setBorder(new EmptyBorder(0,0,0,0));
-        icon.setToolTipText(raidTracker.getSpecialLoot());
+        icon.setToolTipText(lootName());
 
 
         image.onLoaded(() ->
@@ -102,23 +105,23 @@ public class SplitChanger extends JPanel {
         splitReceivedWrapper.setBackground(ColorScheme.DARKER_GRAY_COLOR);
 
         JTextField splitReceived = getTextField();
-        splitReceived.setText(format(atLeastZero(raidTracker.getLootSplitReceived())));
-        splitReceived.setToolTipText(NumberFormat.getInstance().format(atLeastZero(raidTracker.getLootSplitReceived())));
+        splitReceived.setText(format(atLeastZero(splitReceivedValue())));
+        splitReceived.setToolTipText(NumberFormat.getInstance().format(atLeastZero(splitReceivedValue())));
 
         splitReceived.getDocument().addDocumentListener((SimpleDocumentListener) e -> {
             if (!locked) {
                 int value = parse(splitReceived.getText());
 
-                if (value != raidTracker.getLootSplitReceived() && value != -5) {
-                    raidTracker.setLootSplitReceived(value);
-                    if (raidTracker.isFreeForAll()) {
-                        raidTracker.setSpecialLootValue(value);
+                if (value != splitReceivedValue() && value != -5) {
+                    setSplitReceivedValue(value);
+                    if (freeForAll()) {
+                        setLootValue(value);
                     } else {
-                        raidTracker.setSpecialLootValue(value * raidTracker.getTeamSize());
+                        setLootValue(value * raidTracker.getTeamSize());
                         setSplit();
                     }
 
-                    splitReceived.setToolTipText(NumberFormat.getInstance().format(atLeastZero(raidTracker.getLootSplitReceived())));
+                    splitReceived.setToolTipText(NumberFormat.getInstance().format(atLeastZero(splitReceivedValue())));
 
                     variablesChanged();
                 }
@@ -127,7 +130,7 @@ public class SplitChanger extends JPanel {
 
         splitReceived.addActionListener(e -> {
             //format the number when losing focus
-            splitReceived.setText(format(atLeastZero(raidTracker.getLootSplitReceived())));
+            splitReceived.setText(format(atLeastZero(splitReceivedValue())));
         });
 
         splitReceivedWrapper.add(splitReceivedLabel);
@@ -139,9 +142,9 @@ public class SplitChanger extends JPanel {
 
         JCheckBox ffa = new JCheckBox("FFA?");
         ffa.setBorder(new EmptyBorder(0,15,0,0));
-        ffa.setSelected(raidTracker.isFreeForAll());
+        ffa.setSelected(freeForAll());
         ffa.addActionListener((e) -> {
-            raidTracker.setFreeForAll(ffa.isSelected());
+            setFreeForAll(ffa.isSelected());
 
             locked = true;
 
@@ -151,8 +154,8 @@ public class SplitChanger extends JPanel {
             else {
                 setSplit();
             }
-            splitReceived.setText(format(atLeastZero(raidTracker.getLootSplitReceived())));
-            splitReceived.setToolTipText(NumberFormat.getInstance().format(atLeastZero(raidTracker.getLootSplitReceived())));
+            splitReceived.setText(format(atLeastZero(splitReceivedValue())));
+            splitReceived.setToolTipText(NumberFormat.getInstance().format(atLeastZero(splitReceivedValue())));
 
             variablesChanged();
 
@@ -166,7 +169,7 @@ public class SplitChanger extends JPanel {
         JLabel receivedBy = textPanel("received by: ");
         receivedBy.setForeground(ColorScheme.LIGHT_GRAY_COLOR.brighter());
 
-        JLabel receiver = textPanel(fixSpaces(raidTracker.getSpecialLootReceiver()));
+        JLabel receiver = textPanel(fixSpaces(lootReceiver()));
         receiver.setForeground(ColorScheme.LIGHT_GRAY_COLOR.brighter());
 
         ReceivedWrapper.add(receivedBy);
@@ -192,8 +195,8 @@ public class SplitChanger extends JPanel {
             locked = true;
             raidTracker.setTeamSize(Math.min(Math.max(1, Integer.parseInt(teamSize.getValue().toString())), 100));
             setSplit();
-            splitReceived.setText(format(atLeastZero(raidTracker.getLootSplitReceived())));
-            splitReceived.setToolTipText(NumberFormat.getInstance().format(atLeastZero(raidTracker.getLootSplitReceived())));
+            splitReceived.setText(format(atLeastZero(splitReceivedValue())));
+            splitReceived.setToolTipText(NumberFormat.getInstance().format(atLeastZero(splitReceivedValue())));
 
             variablesChanged();
 
@@ -232,32 +235,101 @@ public class SplitChanger extends JPanel {
     }
 
     private void setFFA() {
-        boolean inOwnName = raidTracker.isSpecialLootInOwnName();
+        boolean inOwnName = ownDrop();
 
         if (inOwnName) {
-            raidTracker.setLootSplitReceived(raidTracker.getSpecialLootValue());
-            raidTracker.setLootSplitPaid(-1);
+            setSplitReceivedValue(lootValue());
+            setSplitPaidValue(-1);
         }
         else {
-            raidTracker.setLootSplitPaid(-1);
-            raidTracker.setLootSplitReceived(-1);
+            setSplitPaidValue(-1);
+            setSplitReceivedValue(-1);
         }
     }
 
     private void setSplit() {
-        boolean inOwnName = raidTracker.isSpecialLootInOwnName();
+        boolean inOwnName = ownDrop();
 
-        int splitSize = raidTracker.getSpecialLootValue() / raidTracker.getTeamSize();
+        int splitSize = lootValue() / raidTracker.getTeamSize();
 
-        if (!raidTracker.isFreeForAll()) {
+        if (!freeForAll()) {
             if (inOwnName) {
-                raidTracker.setLootSplitPaid(splitSize);
+                setSplitPaidValue(splitSize);
             } else {
-                raidTracker.setLootSplitPaid(-1);
+                setSplitPaidValue(-1);
             }
 
-            raidTracker.setLootSplitReceived(splitSize);
+            setSplitReceivedValue(splitSize);
         }
+    }
+
+    private String lootName() {
+        return drop != null ? textOrEmpty(drop.getItem()) : textOrEmpty(raidTracker.getSpecialLoot());
+    }
+
+    private String lootReceiver() {
+        return drop != null ? textOrEmpty(drop.getReceiver()) : textOrEmpty(raidTracker.getSpecialLootReceiver());
+    }
+
+    private boolean ownDrop() {
+        return drop != null ? drop.isOwn() : raidTracker.isSpecialLootInOwnName();
+    }
+
+    private boolean freeForAll() {
+        if (drop != null) {
+            return Boolean.TRUE.equals(drop.getFreeForAll());
+        }
+        return raidTracker.isFreeForAll();
+    }
+
+    private void setFreeForAll(boolean value) {
+        if (drop != null) {
+            drop.setFreeForAll(value ? Boolean.TRUE : null);
+            return;
+        }
+        raidTracker.setFreeForAll(value);
+    }
+
+    private int lootValue() {
+        if (drop != null) {
+            return drop.getValue() == null ? -1 : drop.getValue();
+        }
+        return raidTracker.getSpecialLootValue();
+    }
+
+    private void setLootValue(int value) {
+        if (drop != null) {
+            drop.setValue(value);
+            return;
+        }
+        raidTracker.setSpecialLootValue(value);
+    }
+
+    private int splitReceivedValue() {
+        if (drop != null) {
+            return drop.getSplitReceived() == null ? -1 : drop.getSplitReceived();
+        }
+        return raidTracker.getLootSplitReceived();
+    }
+
+    private void setSplitReceivedValue(int value) {
+        if (drop != null) {
+            drop.setSplitReceived(value < 0 ? null : value);
+            return;
+        }
+        raidTracker.setLootSplitReceived(value);
+    }
+
+    private void setSplitPaidValue(int value) {
+        if (drop != null) {
+            drop.setSplitPaid(value < 0 ? null : value);
+            return;
+        }
+        raidTracker.setLootSplitPaid(value);
+    }
+
+    private String textOrEmpty(String text) {
+        return text == null ? "" : text;
     }
 
     private JLabel textPanel(String text) {

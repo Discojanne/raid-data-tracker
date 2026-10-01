@@ -10,7 +10,7 @@ repositories {
 	mavenCentral()
 }
 
-def runeLiteVersion = 'latest.release'
+def runeLiteVersion = findProperty('rlVersion') ?: 'latest.release'
 
 dependencies {
 	compileOnly group: 'net.runelite', name:'client', version: runeLiteVersion
@@ -18,8 +18,8 @@ dependencies {
         exclude group: 'com.google.inject'
     }
 
-	compileOnly 'org.projectlombok:lombok:1.18.20'
-	annotationProcessor 'org.projectlombok:lombok:1.18.20'
+	compileOnly 'org.projectlombok:lombok:1.18.38'
+	annotationProcessor 'org.projectlombok:lombok:1.18.38'
 
     testImplementation "org.mockito:mockito-core:3.3.3"
 	testImplementation "com.google.inject.extensions:guice-testlib:4.2.3"
@@ -34,4 +34,19 @@ version = '1.6.4'
 tasks.withType(JavaCompile).configureEach {
 	options.encoding = 'UTF-8'
 	options.release.set(11)
+}
+
+tasks.named('test') {
+	useJUnit()
+	jvmArgs '-ea', '--add-opens=java.base/java.lang=ALL-UNNAMED'
+}
+
+// Developer client with this plugin loaded. Same shape as the RuneLite example plugin.
+tasks.register('run', JavaExec) {
+	group = 'application'
+	description = 'Run RuneLite with Raid Data Tracker loaded'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.raidtracker.RunClientAndPlugin'
+	jvmArgs '-ea', '--add-opens=java.base/java.lang=ALL-UNNAMED'
+	args '--developer-mode', '--debug'
 }

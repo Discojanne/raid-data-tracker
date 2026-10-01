@@ -1,5 +1,6 @@
 package com.raidtracker;
 
+import com.google.gson.annotations.SerializedName;
 import lombok.Data;
 
 import java.util.ArrayList;
@@ -37,6 +38,16 @@ public class RaidTracker {
     int thievingTime = -1;
     int tightropeTime = -1;
     int crabsTime = -1;
+
+    // Chat has no Olm phase duration. These are raid-clock splits, not raidTime or the floors.
+    ArrayList<Integer> olmMageHandTimes = new ArrayList<>();
+    ArrayList<Integer> olmPhaseTimes = new ArrayList<>();
+    int olmHeadTime = -1;
+
+    @SerializedName(value = "deaths", alternate = {"chambersDeaths"})
+    ArrayList<ChambersDeath> deaths = new ArrayList<>();
+    ArrayList<String> extraDrops = new ArrayList<>();
+    ArrayList<UniqueDrop> uniques = new ArrayList<>();
 
 	int raidLevel = -1;
     int totalPoints = -1;
