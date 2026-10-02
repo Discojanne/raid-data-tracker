@@ -47,18 +47,14 @@ public final class ChambersPurples {
 		}
 	}
 
-	/** One logged death. {@code room} is empty when the log did not name it. */
-	public static final class Death {
-		public final String kc;
-		public final boolean challengeMode;
-		public final String room;
-		public final int pointsLost;
+	/** How many of your deaths were in one room. */
+	public static final class Room {
+		public final String name;
+		public final int deaths;
 
-		Death(String kc, boolean challengeMode, String room, int pointsLost) {
-			this.kc = kc;
-			this.challengeMode = challengeMode;
-			this.room = room == null ? "" : room;
-			this.pointsLost = pointsLost;
+		Room(String name, int deaths) {
+			this.name = name;
+			this.deaths = deaths;
 		}
 	}
 
@@ -69,7 +65,6 @@ public final class ChambersPurples {
 	public final int scrolls;
 	public final long points;
 	public final int pointsLost;
-	public final int deathRaids;
 	public final double averagePoints;
 	public final double expected;
 	public final int dryNow;
@@ -81,7 +76,7 @@ public final class ChambersPurples {
 	public final List<Mark> marks;
 	public final List<String> sideKinds;
 	public final List<Drop> tracked;
-	public final List<Death> deaths;
+	public final List<Room> rooms;
 
 	private ChambersPurples(
 		int raids,
@@ -91,7 +86,6 @@ public final class ChambersPurples {
 		int scrolls,
 		long points,
 		int pointsLost,
-		int deathRaids,
 		double averagePoints,
 		double expected,
 		int dryNow,
@@ -103,7 +97,7 @@ public final class ChambersPurples {
 		List<Mark> marks,
 		List<String> sideKinds,
 		List<Drop> tracked,
-		List<Death> deaths
+		List<Room> rooms
 	) {
 		this.raids = raids;
 		this.regular = regular;
@@ -112,7 +106,6 @@ public final class ChambersPurples {
 		this.scrolls = scrolls;
 		this.points = points;
 		this.pointsLost = pointsLost;
-		this.deathRaids = deathRaids;
 		this.averagePoints = averagePoints;
 		this.expected = expected;
 		this.dryNow = dryNow;
@@ -124,13 +117,13 @@ public final class ChambersPurples {
 		this.marks = marks;
 		this.sideKinds = sideKinds;
 		this.tracked = tracked;
-		this.deaths = deaths == null ? new ArrayList<Death>() : deaths;
+		this.rooms = rooms == null ? new ArrayList<Room>() : rooms;
 	}
 
 	public static ChambersPurples empty() {
-		return new ChambersPurples(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		return new ChambersPurples(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 			new ArrayList<Item>(), new ArrayList<Item>(), new ArrayList<Mark>(), new ArrayList<String>(), new ArrayList<Drop>(),
-			new ArrayList<Death>());
+			new ArrayList<Room>());
 	}
 
 	public boolean isEmpty() {
@@ -153,10 +146,6 @@ public final class ChambersPurples {
 		return averagePoints > 0 ? pointsLost / averagePoints : 0;
 	}
 
-	public double deathRate() {
-		return raids > 0 ? (double) deathRaids / raids : 0;
-	}
-
 	public static ChambersPurples of(List<RaidTracker> raids) {
 		List<RaidTracker> list = raids == null ? new ArrayList<RaidTracker>() : raids;
 		if (list.isEmpty()) {
@@ -172,7 +161,6 @@ public final class ChambersPurples {
 		long points = 0;
 		int pointed = 0;
 		int lost = 0;
-		int deathRaids = 0;
 		double expected = 0;
 		for (int i = 0; i < list.size(); i++) {
 			RaidTracker raid = list.get(i);
@@ -180,9 +168,6 @@ public final class ChambersPurples {
 				challenge++;
 			} else {
 				regular++;
-			}
-			if (ChambersFacts.died(raid)) {
-				deathRaids++;
 			}
 			lost += ChambersFacts.pointsLost(raid);
 			List<String> purples = ChambersFacts.ownPurples(raid);
@@ -293,25 +278,55 @@ public final class ChambersPurples {
 				tracked.add(new Drop(kc, ownSides.get(s), raid.isChallengeMode(), ChambersFacts.sideKind(ownSides.get(s))));
 			}
 		}
-		List<Death> deathRows = new ArrayList<>();
-		for (int i = list.size() - 1; i >= 0; i--) {
+		List<Room> rooms = new ArrayList<>();
+		for (int i = 0; i < list.size(); i++) {
 			RaidTracker raid = list.get(i);
 			if (raid.getDeaths() == null) {
 				continue;
 			}
-			String kc = raid.getCompletionCount() > 0 ? Integer.toString(raid.getCompletionCount()) : "--";
-			for (int d = raid.getDeaths().size() - 1; d >= 0; d--) {
+			for (int d = 0; d < raid.getDeaths().size(); d++) {
 				ChambersDeath death = raid.getDeaths().get(d);
-				if (death == null) {
+				if (death == null || death.getRoom() == null || death.getRoom().isEmpty()) {
 					continue;
 				}
-				deathRows.add(new Death(kc, raid.isChallengeMode(), death.getRoom(), death.getPointsLost()));
+				addRoom(rooms, death.getRoom());
 			}
 		}
+		sortRooms(rooms);
 		double averagePoints = pointed == 0 ? 0 : (double) points / pointed;
-		return new ChambersPurples(list.size(), regular, challenge, actual, scrolls, points, lost, deathRaids,
+		return new ChambersPurples(list.size(), regular, challenge, actual, scrolls, points, lost,
 			averagePoints, expected, dryNow, longest, averageDry, expectedEvery, items, sides, marks, sideKinds, tracked,
-			deathRows);
+			rooms);
+	}
+
+	private static void addRoom(List<Room> rooms, String name) {
+		for (int i = 0; i < rooms.size(); i++) {
+			Room room = rooms.get(i);
+			if (room.name.equals(name)) {
+				rooms.set(i, new Room(name, room.deaths + 1));
+				return;
+			}
+		}
+		rooms.add(new Room(name, 1));
+	}
+
+	private static void sortRooms(List<Room> rooms) {
+		for (int i = 1; i < rooms.size(); i++) {
+			Room room = rooms.get(i);
+			int j = i;
+			while (j > 0 && before(room, rooms.get(j - 1))) {
+				rooms.set(j, rooms.get(j - 1));
+				j--;
+			}
+			rooms.set(j, room);
+		}
+	}
+
+	private static boolean before(Room room, Room other) {
+		if (room.deaths != other.deaths) {
+			return room.deaths > other.deaths;
+		}
+		return room.name.compareTo(other.name) < 0;
 	}
 
 	private static int indexOf(String[] names, String name) {

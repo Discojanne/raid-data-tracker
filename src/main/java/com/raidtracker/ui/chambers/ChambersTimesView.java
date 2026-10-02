@@ -9,6 +9,7 @@ import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.FontMetrics;
+import java.awt.Insets;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.GridLayout;
@@ -59,6 +60,10 @@ public class ChambersTimesView extends JPanel {
 	private static final Font TIME = new Font(Font.SANS_SERIF, Font.BOLD, 13);
 	private static final int STRIP_HEIGHT = 22;
 	private static final int FILTER_HEIGHT = 20;
+	/** Extra pixels so a value that paints a hair wider than it measured is not clipped to "...". */
+	private static final int TEXT_PAD = 8;
+	private static final int COLUMN_GAP = 10;
+	private static final int NAME_GAP = 12;
 
 	private final List<RaidTracker> saved;
 	private final List<RaidTracker> all;
@@ -80,6 +85,9 @@ public class ChambersTimesView extends JPanel {
 	private int liveSignature = Integer.MIN_VALUE;
 	private boolean currentShown;
 	private boolean watchingViewport;
+	/** Shared right-aligned widths so a wider diff cannot shove that row's time sideways. */
+	private int timeColumn;
+	private int diffColumn;
 
 	public ChambersTimesView(
 		List<RaidTracker> saved,
@@ -100,7 +108,7 @@ public class ChambersTimesView extends JPanel {
 		this.size = size;
 		this.focus = focus;
 		this.best = best;
-		this.targetSide = "Last".equals(targetSide) ? "Last" : "This";
+		this.targetSide = shownTargetSide(targetSide);
 		this.targetCount = Math.max(1, Math.min(100, targetCount));
 		setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
@@ -148,7 +156,7 @@ public class ChambersTimesView extends JPanel {
 	}
 
 	public void showLive(RaidTracker live, int openSeconds) {
-		if ("Target".equals(focus) && "Last".equals(targetSide)) {
+		if ("Target".equals(focus) && !"This".equals(targetSide)) {
 			return;
 		}
 		int signature = signature(live);
@@ -159,12 +167,20 @@ public class ChambersTimesView extends JPanel {
 			return;
 		}
 		if (wantCurrent) {
-			currentValue.setText(ChambersFacts.formatTime(openSeconds));
+			String shown = ChambersFacts.formatTime(openSeconds);
+			if (textWidth(shown) > timeColumn) {
+				showTable(tableFor(live, openSeconds, focus, null));
+				return;
+			}
+			currentValue.setText(shown);
 		}
 	}
 
 	private ChambersTimes.Table tableFor(RaidTracker live, int openSeconds, String focus, String best) {
 		if ("Target".equals(focus)) {
+			if ("Avg".equals(targetSide)) {
+				return ChambersTargets.averageVersusTarget(saved, config);
+			}
 			return ChambersTargets.compare(saved, live, openSeconds, config, mode, size, "Last".equals(targetSide), targetCount);
 		}
 		boolean includeIceMilking = config != null && config.iceMilking();
@@ -186,6 +202,9 @@ public class ChambersTimesView extends JPanel {
 		shownRows = new ArrayList<>(table.rows);
 		copyHeading = copyTitle(focus, best, targetSide, targetCount, table.caption);
 		rows.setComponentPopupMenu(shownRows.isEmpty() ? null : copyMenu);
+		int[] columns = numberColumns(table.rows);
+		timeColumn = columns[0];
+		diffColumn = columns[1];
 		String group = "";
 		if (isBadge(table.caption)) {
 			kcLabel.setText(table.caption);
@@ -219,7 +238,10 @@ public class ChambersTimesView extends JPanel {
 		}
 		rows.revalidate();
 		rows.repaint();
-		SwingUtilities.invokeLater(this::fillGraph);
+		SwingUtilities.invokeLater(() -> {
+			refreshColumns();
+			fillGraph();
+		});
 	}
 
 	private void watchViewport() {
@@ -236,6 +258,7 @@ public class ChambersTimesView extends JPanel {
 				}
 			});
 		}
+		refreshColumns();
 		fillGraph();
 	}
 
@@ -267,12 +290,6 @@ public class ChambersTimesView extends JPanel {
 	}
 
 	private JPanel line(ChambersTimes.Row row) {
-		JPanel line = new JPanel(new BorderLayout(12, 0));
-		line.setBackground(row.open ? new Color(46, 46, 46) : CARD);
-		line.setBorder(new CompoundBorder(
-			new MatteBorder(0, 0, 1, 0, HAIR),
-			new EmptyBorder(0, 4, 0, 6)
-		));
 		JLabel name = text(row.label, Color.WHITE);
 		name.setHorizontalAlignment(SwingConstants.LEFT);
 		if ("PPH".equals(row.label)) {
@@ -289,26 +306,76 @@ public class ChambersTimesView extends JPanel {
 			currentShown = true;
 			value = currentValue;
 		}
-		JPanel numbers = new JPanel(new BorderLayout(10, 0));
-		numbers.setOpaque(false);
-		if (row.aside.isEmpty()) {
-			numbers.add(value, BorderLayout.EAST);
-		} else {
-			JLabel aside = text(row.aside, diffColor(row));
+		final JLabel timeLabel = value;
+		final JLabel diffLabel;
+		if (diffColumn > 0) {
+			JLabel aside = text(row.aside, asideColor(row));
 			aside.setFont(TIME);
 			aside.setHorizontalAlignment(SwingConstants.RIGHT);
-			numbers.add(value, BorderLayout.WEST);
-			numbers.add(aside, BorderLayout.EAST);
+			diffLabel = aside;
+		} else {
+			diffLabel = null;
 		}
-		JPanel nameSide = new JPanel(new BorderLayout(4, 0));
-		nameSide.setOpaque(false);
-		nameSide.add(mark(row), BorderLayout.WEST);
-		nameSide.add(name, BorderLayout.CENTER);
-		line.add(nameSide, BorderLayout.CENTER);
-		line.add(numbers, BorderLayout.EAST);
+		final JPanel tick = mark(row);
+		JPanel line = new JPanel(null) {
+			@Override
+			public void doLayout() {
+				layoutLine(this, tick, name, timeLabel, diffLabel);
+			}
+
+			@Override
+			public Dimension getPreferredSize() {
+				return lineSize(this, name, timeLabel, diffLabel);
+			}
+		};
+		line.setBackground(row.open ? new Color(46, 46, 46) : CARD);
+		line.setBorder(new CompoundBorder(
+			new MatteBorder(0, 0, 1, 0, HAIR),
+			new EmptyBorder(0, 4, 0, 6)
+		));
+		line.add(tick);
+		line.add(name);
+		line.add(timeLabel);
+		if (diffLabel != null) {
+			line.add(diffLabel);
+		}
 		stretch(line);
 		inheritCopy(line);
 		return line;
+	}
+
+	/**
+	 * Time and diff sit on the right at a shared width. The room name uses whatever width is left.
+	 */
+	private void layoutLine(JPanel line, JPanel tick, JLabel name, JLabel timeLabel, JLabel diffLabel) {
+		Insets insets = line.getInsets();
+		int top = insets.top;
+		int height = Math.max(1, line.getHeight() - top - insets.bottom);
+		int right = line.getWidth() - insets.right;
+		if (diffLabel != null && diffColumn > 0) {
+			diffLabel.setBounds(right - diffColumn, top, diffColumn, height);
+			right -= diffColumn + COLUMN_GAP;
+		}
+		int timeW = Math.max(1, timeColumn);
+		timeLabel.setBounds(right - timeW, top, timeW, height);
+		right -= timeW + NAME_GAP;
+		int left = insets.left;
+		tick.setBounds(left, top, 3, height);
+		left += 7;
+		name.setBounds(left, top, Math.max(0, right - left), height);
+	}
+
+	private Dimension lineSize(JPanel line, JLabel name, JLabel timeLabel, JLabel diffLabel) {
+		Insets insets = line.getInsets();
+		int height = Math.max(name.getPreferredSize().height, timeLabel.getPreferredSize().height);
+		if (diffLabel != null) {
+			height = Math.max(height, diffLabel.getPreferredSize().height);
+		}
+		int width = insets.left + insets.right + 7 + name.getPreferredSize().width + NAME_GAP + Math.max(0, timeColumn);
+		if (diffLabel != null && diffColumn > 0) {
+			width += COLUMN_GAP + diffColumn;
+		}
+		return new Dimension(Math.max(1, width), Math.max(1, height) + insets.top + insets.bottom);
 	}
 
 	/**
@@ -361,10 +428,20 @@ public class ChambersTimesView extends JPanel {
 		return out.toString();
 	}
 
-	/** Badge first, then the Best choice. Target's Last N is {@code Last N}. */
+	static String shownTargetSide(String value) {
+		if ("Last".equals(value) || "Avg".equals(value)) {
+			return value;
+		}
+		return "This";
+	}
+
+	/** Badge first, then the Best choice. Target's Last N is {@code Last N}. Avg vs Trg keeps that name. */
 	static String copyTitle(String focus, String best, String targetSide, int targetCount, String caption) {
 		if ("Target".equals(focus) && "Last".equals(targetSide)) {
 			return "Last " + targetCount;
+		}
+		if ("Target".equals(focus) && "Avg".equals(targetSide)) {
+			return "Avg vs Trg";
 		}
 		if (isBadge(caption)) {
 			return caption;
@@ -486,6 +563,44 @@ public class ChambersTimesView extends JPanel {
 		return mark;
 	}
 
+	/**
+	 * Widest time and widest comparison in this table, plus a little slack.
+	 * A row with no comparison still keeps the comparison column when any other row has one.
+	 */
+	private int[] numberColumns(List<ChambersTimes.Row> tableRows) {
+		int time = 0;
+		int diff = 0;
+		for (int i = 0; i < tableRows.size(); i++) {
+			ChambersTimes.Row row = tableRows.get(i);
+			time = Math.max(time, textWidth(row.value));
+			if (!row.aside.isEmpty()) {
+				diff = Math.max(diff, textWidth(row.aside));
+			}
+		}
+		return new int[] {time, diff};
+	}
+
+	private int textWidth(String text) {
+		if (text == null || text.isEmpty()) {
+			return 0;
+		}
+		return getFontMetrics(TIME).stringWidth(text) + TEXT_PAD;
+	}
+
+	/** Font metrics grow once the panel is on screen. Widen the columns if the text no longer fits. */
+	private void refreshColumns() {
+		if (shownRows.isEmpty()) {
+			return;
+		}
+		int[] columns = numberColumns(shownRows);
+		if (columns[0] == timeColumn && columns[1] == diffColumn) {
+			return;
+		}
+		timeColumn = columns[0];
+		diffColumn = columns[1];
+		rows.revalidate();
+	}
+
 	/** Same cuts as CoXGrind: 20 ahead is cyan, ahead is green, under 10 behind is orange. */
 	private static Color markColor(ChambersTimes.Row row) {
 		if (row.gold && !row.higher) {
@@ -508,6 +623,14 @@ public class ChambersTimesView extends JPanel {
 			return ORANGE;
 		}
 		return RED;
+	}
+
+	/** Comparison text uses the same colors as the bar. Best kill counts stay gray. */
+	private static Color asideColor(ChambersTimes.Row row) {
+		if (row.gold) {
+			return diffColor(row);
+		}
+		return markColor(row);
 	}
 
 	private static Color diffColor(ChambersTimes.Row row) {
@@ -658,6 +781,8 @@ public class ChambersTimesView extends JPanel {
 		private final String[] names;
 		private final String selected;
 		private final String field;
+		/** Label under the pointer when the button went down. Release on that same label switches. */
+		private int pressedIndex = -1;
 
 		private ChoiceStrip(String[] names, String selected, String field) {
 			this.names = names;
@@ -677,9 +802,19 @@ public class ChambersTimesView extends JPanel {
 			});
 			addMouseListener(new MouseAdapter() {
 				@Override
-				public void mouseClicked(MouseEvent event) {
+				public void mousePressed(MouseEvent event) {
+					pressedIndex = SwingUtilities.isLeftMouseButton(event) ? indexAt(event.getX()) : -1;
+				}
+
+				@Override
+				public void mouseReleased(MouseEvent event) {
+					int pressed = pressedIndex;
+					pressedIndex = -1;
+					if (!SwingUtilities.isLeftMouseButton(event) || !inside(event)) {
+						return;
+					}
 					int index = indexAt(event.getX());
-					if (index >= 0 && !names[index].equals(selected)) {
+					if (index >= 0 && index == pressed && !names[index].equals(selected)) {
 						choice.choose(field, names[index]);
 					}
 				}
@@ -735,7 +870,7 @@ public class ChambersTimesView extends JPanel {
 		}
 
 		private int indexAt(int x) {
-			if (names.length == 0 || getWidth() <= 0) {
+			if (names.length == 0 || getWidth() <= 0 || x < 0) {
 				return -1;
 			}
 			int index = x * names.length / getWidth();
@@ -743,6 +878,11 @@ public class ChambersTimesView extends JPanel {
 				return -1;
 			}
 			return index;
+		}
+
+		private boolean inside(MouseEvent event) {
+			return event.getX() >= 0 && event.getY() >= 0
+				&& event.getX() < getWidth() && event.getY() < getHeight();
 		}
 
 		private Font fontThatFits(Graphics2D g, String name, int room) {
@@ -761,9 +901,13 @@ public class ChambersTimesView extends JPanel {
 				return "This raid against your average";
 			}
 			if ("Target".equals(name)) {
-				return "Last".equals(targetSide)
-					? "Last " + targetCount + " raids against your targets"
-					: "This raid against your targets";
+				if ("Last".equals(targetSide)) {
+					return "Last " + targetCount + " raids against your targets";
+				}
+				if ("Avg".equals(targetSide)) {
+					return "Your average against your targets";
+				}
+				return "This raid against your targets";
 			}
 			if ("Best".equals(name)) {
 				return "Best splits, raid time, and points per hour";
@@ -782,19 +926,55 @@ public class ChambersTimesView extends JPanel {
 	}
 
 	/**
-	 * This, or Last N with minus and plus on either side of the title.
+	 * This, Last N, or Avg vs Trg. Minus and plus sit on either side of Last.
 	 * A click changes N by 1. Shift changes it by 10.
 	 */
 	private final class TargetStrip extends JPanel {
+		private static final int HIT_NONE = -1;
+		private static final int HIT_THIS = 0;
+		private static final int HIT_MINUS = 1;
+		private static final int HIT_PLUS = 2;
+		private static final int HIT_LAST = 3;
+		private static final int HIT_AVG = 4;
+		/** Control under the pointer when the button went down. Release on that same control acts. */
+		private int pressedHit = HIT_NONE;
+
 		private TargetStrip() {
 			setOpaque(true);
 			setBackground(BAR);
 			setAlignmentX(LEFT_ALIGNMENT);
 			setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+			addMouseMotionListener(new MouseAdapter() {
+				@Override
+				public void mouseMoved(MouseEvent event) {
+					int kind = hitKind(event);
+					if (kind == HIT_THIS) {
+						setToolTipText("This raid against your targets");
+					} else if (kind == HIT_AVG) {
+						setToolTipText("Your average against your targets");
+					} else if (kind == HIT_NONE) {
+						setToolTipText(null);
+					} else {
+						setToolTipText("Last " + targetCount + " raids against your targets");
+					}
+				}
+			});
 			addMouseListener(new MouseAdapter() {
 				@Override
-				public void mouseClicked(MouseEvent event) {
-					hit(event);
+				public void mousePressed(MouseEvent event) {
+					pressedHit = SwingUtilities.isLeftMouseButton(event) ? hitKind(event) : HIT_NONE;
+				}
+
+				@Override
+				public void mouseReleased(MouseEvent event) {
+					int pressed = pressedHit;
+					pressedHit = HIT_NONE;
+					if (!SwingUtilities.isLeftMouseButton(event) || pressed == HIT_NONE) {
+						return;
+					}
+					if (hitKind(event) == pressed) {
+						act(pressed, event.isShiftDown());
+					}
 				}
 			});
 		}
@@ -819,19 +999,49 @@ public class ChambersTimesView extends JPanel {
 			super.paintComponent(graphics);
 			Graphics2D g = (Graphics2D) graphics.create();
 			g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-			int width = getWidth();
-			int height = getHeight();
-			int mid = width / 2;
-			paintCell(g, 0, mid, "This", "This".equals(targetSide));
-			paintCell(g, mid, width - mid, lastTitle(), "Last".equals(targetSide));
+			int[] zones = zones();
+			paintCell(g, 0, zones[0], "This", "This".equals(targetSide), true);
+			paintCell(g, zones[0], zones[1], lastTitle(), "Last".equals(targetSide), false);
+			paintCell(g, zones[0] + zones[1], zones[2], "Avg vs Trg", "Avg".equals(targetSide), true);
 			g.dispose();
 		}
 
-		private void paintCell(Graphics2D g, int x, int span, String name, boolean on) {
+		/**
+		 * This, then Last, then Avg vs Trg. Last keeps the width its stepper title needs.
+		 */
+		private int[] zones() {
+			int width = Math.max(0, getWidth());
+			FontMetrics metrics = getFontMetrics(SWITCH);
+			int thisNeed = metrics.stringWidth("This") + 12;
+			int avgNeed = metrics.stringWidth("Avg vs Trg") + 12;
+			int lastNeed = metrics.stringWidth(lastTitle()) + 8;
+			int thisW;
+			int lastW;
+			int avgW;
+			if (thisNeed + lastNeed + avgNeed <= width) {
+				int extra = width - thisNeed - lastNeed - avgNeed;
+				int share = extra / 3;
+				thisW = thisNeed + share;
+				avgW = avgNeed + share;
+				lastW = width - thisW - avgW;
+			} else {
+				lastW = Math.min(lastNeed, Math.max(0, width - 36));
+				int rest = Math.max(0, width - lastW);
+				int weight = Math.max(1, thisNeed + avgNeed);
+				thisW = rest * thisNeed / weight;
+				avgW = rest - thisW;
+			}
+			return new int[] { thisW, lastW, avgW };
+		}
+
+		private void paintCell(Graphics2D g, int x, int span, String name, boolean on, boolean shrink) {
+			if (span <= 0) {
+				return;
+			}
 			Shape clip = g.getClip();
 			g.clipRect(x, 0, span, getHeight());
 			g.setColor(on ? Color.WHITE : ColorScheme.LIGHT_GRAY_COLOR);
-			g.setFont(SWITCH);
+			g.setFont(shrink ? fontFor(g, name, span - 8) : SWITCH);
 			FontMetrics metrics = g.getFontMetrics();
 			int textX = x + Math.max(4, (span - metrics.stringWidth(name)) / 2);
 			int textY = (getHeight() - metrics.getHeight()) / 2 + metrics.getAscent();
@@ -845,33 +1055,97 @@ public class ChambersTimesView extends JPanel {
 			}
 		}
 
-		private void hit(MouseEvent event) {
+		private int hitKind(MouseEvent event) {
 			int width = getWidth();
-			if (width <= 0) {
-				return;
+			int height = getHeight();
+			int x = event.getX();
+			int y = event.getY();
+			if (width <= 0 || height <= 0 || x < 0 || y < 0 || x >= width || y >= height) {
+				return HIT_NONE;
 			}
-			int mid = width / 2;
-			if (event.getX() < mid) {
+			int[] zones = zones();
+			if (x < zones[0]) {
+				return HIT_THIS;
+			}
+			if (x >= zones[0] + zones[1]) {
+				return HIT_AVG;
+			}
+			int[] steps = stepBounds(zones[0], zones[1]);
+			if (x >= steps[0] && x < steps[0] + steps[1]) {
+				return HIT_MINUS;
+			}
+			if (x >= steps[2] && x < steps[2] + steps[3]) {
+				return HIT_PLUS;
+			}
+			return HIT_LAST;
+		}
+
+		private void act(int kind, boolean shift) {
+			if (kind == HIT_THIS) {
 				if (!"This".equals(targetSide)) {
 					choice.choose("target", "This");
 				}
 				return;
 			}
-			int span = width - mid;
-			int pad = Math.min(22, Math.max(16, span / 5));
-			int local = event.getX() - mid;
-			int step = event.isShiftDown() ? 10 : 1;
-			if (local < pad) {
+			int step = shift ? 10 : 1;
+			if (kind == HIT_MINUS) {
 				changeCount(-step);
 				return;
 			}
-			if (local >= span - pad) {
+			if (kind == HIT_PLUS) {
 				changeCount(step);
 				return;
 			}
-			if (!"Last".equals(targetSide)) {
+			if (kind == HIT_LAST && !"Last".equals(targetSide)) {
 				choice.choose("target", "Last");
+				return;
 			}
+			if (kind == HIT_AVG && !"Avg".equals(targetSide)) {
+				choice.choose("target", "Avg");
+			}
+		}
+
+		private Font fontFor(Graphics2D g, String name, int room) {
+			if (room > 0 && g.getFontMetrics(SWITCH).stringWidth(name) <= room) {
+				return SWITCH;
+			}
+			Font smaller = new Font(Font.SANS_SERIF, Font.BOLD, 11);
+			if (room > 0 && g.getFontMetrics(smaller).stringWidth(name) <= room) {
+				return smaller;
+			}
+			return FontManager.getRunescapeSmallFont();
+		}
+
+		/**
+		 * Minus and plus click targets, in the same place those glyphs are drawn.
+		 * Returns minus x, minus width, plus x, plus width.
+		 */
+		private int[] stepBounds(int origin, int span) {
+			FontMetrics metrics = getFontMetrics(SWITCH);
+			String name = lastTitle();
+			int nameWidth = metrics.stringWidth(name);
+			int textX = origin + Math.max(4, (span - nameWidth) / 2);
+			int minusWidth = metrics.stringWidth("\u2212");
+			int plusWidth = metrics.stringWidth("+");
+			int plusX = textX + nameWidth - plusWidth;
+			int gap = metrics.stringWidth("  ");
+			int left = Math.max(origin, textX - 4);
+			int minusRight = textX + minusWidth + gap;
+			int plusLeft = plusX - gap;
+			int right = Math.min(origin + span, plusX + plusWidth + 4);
+			if (minusRight > plusLeft) {
+				int split = textX + minusWidth + Math.max(0, plusX - (textX + minusWidth)) / 2;
+				minusRight = split;
+				plusLeft = split;
+			}
+			minusRight = Math.min(minusRight, origin + span);
+			plusLeft = Math.max(plusLeft, origin);
+			return new int[] {
+				left,
+				Math.max(0, minusRight - left),
+				plusLeft,
+				Math.max(0, right - plusLeft)
+			};
 		}
 
 		private void changeCount(int step) {

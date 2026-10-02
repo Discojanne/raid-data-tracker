@@ -3,28 +3,18 @@ package com.raidtracker;
 import com.google.inject.Binder;
 import com.google.inject.Provides;
 import com.google.inject.Inject;
+import com.raidtracker.chambers.ChambersSession;
 import com.raidtracker.filereadwriter.FileReadWriter;
 import com.raidtracker.ui.RaidTrackerPanel;
-import com.raidtracker.ui.chambers.ChambersFacts;
 import com.raidtracker.ui.chambers.TargetTimeSettings;
-import com.raidtracker.vanguard.VanguardLog;
-import com.raidtracker.vanguard.VanguardNpcs;
-import com.raidtracker.vanguard.VanguardSample;
-import com.raidtracker.vanguard.VanguardTracker;
-import java.io.IOException;
-import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.Actor;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
-import net.runelite.api.HitsplatID;
-import net.runelite.api.NPC;
 import net.runelite.api.InventoryID;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
@@ -98,39 +88,10 @@ public class RaidTrackerPlugin extends Plugin
     private static final int TOA_CANVAS_WIDGET_ID = 481;
     private static final int TOA_TIMER_WIDGET_ID = 46;
 
-	private static final int RAID_PARTY_SIZE = 5424;
-	/** Chambers raid clock. 100 units is one minute. Chat has no Olm phase duration. */
-	private static final int RAID_TIMER = 6386;
-	/** Challenge Mode. The same varbit CoXGrind reads before it will record a Vanguard room. */
-	private static final int CHALLENGE_MODE = 6385;
-	private static final int OLM_ENCOUNTER = 29881;
-	private static final int OLM_MAGE_HAND = 7550;
-	private static final int OLM_MAGE_HAND_CM = 7553;
-	private static final int OLM_MELEE_HAND = 7552;
-	private static final int OLM_MELEE_HAND_CM = 7555;
-	private static final int DEATH_POINT_TICKS = 6;
-	private static final int FULL_LAYOUT_PREP_ROOMS = 11;
 	private static final String FLOOR_HIGHLIGHT = "@mes_hl_mag@";
 	private static final String PLAYER_DEATH = "Oh dear, you are dead!";
 
-	private int olmPhaseStartUnits = -1;
-	private int olmPhase = 1;
-	private boolean olmMageRecorded;
-	private int olmHeadStartUnits = -1;
-	private boolean olmFightStarted;
-	private String lastPrepRoom = "";
-	private boolean pendingDeath;
-	private int pendingBaseline;
-	private int pendingMin;
-	private int pendingTicks;
-	private int lastPersonalPoints;
-	private boolean chambersLive;
-	private int chambersAnchorUnits;
-	private int lastLiveSignature = Integer.MIN_VALUE;
-	private final VanguardTracker vanguards = new VanguardTracker();
-	private final VanguardLog vanguardLog = new VanguardLog();
-	private String vanguardKey;
-	private String vanguardDirectory;
+	private ChambersSession chambersSession;
 
 	@Inject
 	private Client client;
@@ -152,6 +113,14 @@ public class RaidTrackerPlugin extends Plugin
 
 	public RaidTracker getRaidTracker() {
 		return raidTracker;
+	}
+
+	/** Live Chambers tracking. Tests call this. The plugin does not keep a second copy of the methods. */
+	ChambersSession chambers() {
+		if (chambersSession == null) {
+			chambersSession = new ChambersSession(client, config, () -> raidTracker, () -> fw, () -> panel);
+		}
+		return chambersSession;
 	}
 
 	@Inject
@@ -225,7 +194,7 @@ public class RaidTrackerPlugin extends Plugin
 
 	@Override
 	protected void shutDown() {
-		leaveVanguards();
+		chambers().leaveVanguards();
 		raidTracker.setInRaidChambers(false);
 		if (targetSettings != null) {
 			targetSettings.stop();
@@ -240,17 +209,28 @@ public class RaidTrackerPlugin extends Plugin
 		if (!e.getGroup().equals(RaidTrackerConfig.CONFIG_GROUP)) {
 			return;
 		}
-		if (targetSettings != null && !targetSettings.isBusy() && !"cmSoloTotal".equals(e.getKey())) {
+		// The gray total is calculated. It is not a reason to redraw the sidebar.
+		if ("cmSoloTotal".equals(e.getKey())) {
+			return;
+		}
+		if (targetSettings != null && !targetSettings.isBusy()) {
 			targetSettings.forgetTotal();
 			targetSettings.refreshTotal();
 		}
-		panel.loadRTList();
+		// Login, a league hop, Refresh, and Clear data reread the files. A setting uses the raids already loaded.
+		if (panel != null) {
+			panel.redraw();
+		}
 	}
 
 	@Subscribe
 	public void onVarbitChanged(VarbitChanged event) {
 		if (WorldUtils.playerOnUntrackedWorld(client)) {
 			return;
+		}
+
+		if (event.getVarbitId() == ChambersSession.RAID_DEATH_COUNT) {
+			chambers().noteRaidDeaths(event.getValue());
 		}
 
 		boolean tempInRaid = client.getVarbitValue(Varbits.IN_RAID) == 1;
@@ -263,12 +243,11 @@ public class RaidTrackerPlugin extends Plugin
 			if (tempInRaid && raidTracker.isLoggedIn()) {
 				checkRaidPresence();
 			} else if (!tempInRaid && !raidTracker.isRaidComplete()) {
-				leaveVanguards();
-				if (chambersLive) {
-					chambersLive = false;
-					lastLiveSignature = Integer.MIN_VALUE;
-					SwingUtilities.invokeLater(() -> panel.clearLiveChambers());
-				}
+				// Out of the raid before it finished. Drop the in-memory raid and write nothing.
+				// Stay logged in so the next IN_RAID edge can start a new one.
+				chambers().leftBeforeComplete();
+				reset();
+				raidTracker.setLoggedIn(true);
 			} else if (raidTracker.isRaidComplete() && !raidTracker.isChestOpened()) {
 				//player just exited a raid, if the chest is not looted write the raid tracker anyway.
 				//might deprecate the writing after widgetloaded in the future, not decided yet.
@@ -276,7 +255,7 @@ public class RaidTrackerPlugin extends Plugin
 					return;
 				}
 
-				settleChambersDeathRooms(raidTracker);
+				chambers().settleChambersDeathRooms(raidTracker);
 				fw.writeToFile(raidTracker);
 
 				writerStarted = true;
@@ -345,12 +324,12 @@ public class RaidTrackerPlugin extends Plugin
 			}
 			else if (client.getGameState() == GameState.LOGIN_SCREEN
 					|| client.getGameState() == GameState.CONNECTION_LOST) {
-				leaveVanguards();
+				chambers().leaveVanguards();
 				raidTracker.setLoggedIn(false);
 				isFirstGameTick = true;
 			}
 			else if (client.getGameState() == GameState.HOPPING) {
-				leaveVanguards();
+				chambers().leaveVanguards();
 				isFirstGameTick = true;
 				reset();
 			}
@@ -376,13 +355,13 @@ public class RaidTrackerPlugin extends Plugin
 		else if (client.getGameState() == GameState.LOGIN_SCREEN
 				|| client.getGameState() == GameState.CONNECTION_LOST)
 		{
-			leaveVanguards();
+			chambers().leaveVanguards();
 			raidTracker.setLoggedIn(false);
             isFirstGameTick = true;
 		}
 		else if (client.getGameState() == GameState.HOPPING)
 		{
-			leaveVanguards();
+			chambers().leaveVanguards();
             isFirstGameTick = true;
 			reset();
 		}
@@ -461,12 +440,14 @@ public class RaidTrackerPlugin extends Plugin
         }
 
 		int WIDGET_TIMER = WidgetUtil.packComponentId(TOA_CANVAS_WIDGET_ID, TOA_TIMER_WIDGET_ID);
-		if (raidTracker.isInRaidChambers() && !raidTracker.isRaidComplete()) {
-			notePersonalPoints(client.getVarpValue(VarPlayer.RAIDS_PERSONAL_POINTS));
-			watchVanguards();
+		if (!raidTracker.isRaidComplete() && (raidTracker.isInRaidChambers() || chambers().isTracking())) {
+			chambers().notePersonalPoints(client.getVarpValue(VarPlayer.RAIDS_PERSONAL_POINTS));
+			if (raidTracker.isInRaidChambers()) {
+				chambers().watchVanguards();
+			}
 		}
-		if (chambersLive && raidTracker.isInRaidChambers() && panel.wantsLiveChambers()) {
-			pushLiveChambers();
+		if (chambers().isLive() && raidTracker.isInRaidChambers() && panel.wantsLiveChambers()) {
+			chambers().pushLiveChambers();
 		}
 
 		if (raidTracker.isInTombsOfAmascut() && client.getWidget(WIDGET_TIMER) != null) {
@@ -532,7 +513,7 @@ public class RaidTrackerPlugin extends Plugin
 
                 writerStarted = true;
 
-                settleChambersDeathRooms(raidTracker);
+                chambers().settleChambersDeathRooms(raidTracker);
                 fw.writeToFile(raidTracker);
 
                 SwingUtilities.invokeLater(() -> {
@@ -689,25 +670,28 @@ public class RaidTrackerPlugin extends Plugin
 			playerName = Text.toJagexName(client.getLocalPlayer().getName());
 		}
 
-		if ((raidTracker.isInRaidChambers() || raidTracker.isInTheatreOfBlood() || raidTracker.isInTombsOfAmascut()) &&
+		boolean chambersOpen = raidTracker.isInRaidChambers() || chambers().isTracking();
+		if ((chambersOpen || raidTracker.isInTheatreOfBlood() || raidTracker.isInTombsOfAmascut()) &&
 			(event.getType() == ChatMessageType.FRIENDSCHATNOTIFICATION || event.getType() == ChatMessageType.GAMEMESSAGE)) {
 			//unescape java to avoid unicode
 			String message = unescapeJavaString(Text.removeTags(event.getMessage())).replaceAll("\u00A0", " ").replace(FLOOR_HIGHLIGHT, "");
             Matcher m;
 
-			// Fixes issue with inconsistent resets due to
-			// Varbits.TOA_RAID_LEVEL not resetting when you leave
+			// Tombs only. The raid level varbit does not clear on its own when you leave.
 			if (message.contains("You enter the Tombs of Amascut")) {
 				reset();
 			}
 
-            // Filter out message with "-" so we don't accidentally consider it specialLoot
+            // Shared filter. A Tombs patient record is not loot.
             if (message.contains("- patient record")) return;
 
-			if (raidTracker.isInRaidChambers() && !raidTracker.isRaidComplete() && message.contains(PLAYER_DEATH)) {
-				recordChambersDeath();
+			// Chambers only. The death line is the player's own.
+			if (chambersOpen && !raidTracker.isRaidComplete() && message.contains(PLAYER_DEATH)) {
+				chambers().recordChambersDeath(client.getVarpValue(VarPlayer.RAIDS_PERSONAL_POINTS));
 			}
 
+			// Chambers floors and rooms. Times stay on the raid. The session hears which prep room finished.
+			// A Theatre wave uses the same duration sentence and only reaches the clock anchor.
 			if (message.contains(LEVEL_COMPLETE_MESSAGE)) {
 				String timeString = message.split("complete! Duration: ")[1];
 
@@ -723,78 +707,76 @@ public class RaidTrackerPlugin extends Plugin
 
 				if (message.toLowerCase().contains("shamans")) {
 					raidTracker.setShamansTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Shamans";
+					chambers().prepRoomFinished("Shamans");
 				}
 
 				if (message.toLowerCase().contains("vasa")) {
 					raidTracker.setVasaTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Vasa";
+					chambers().prepRoomFinished("Vasa");
 				}
 
 				if (message.toLowerCase().contains("vanguards")) {
 					raidTracker.setVanguardsTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Vanguards";
-					finishVanguards(true);
+					chambers().prepRoomFinished("Vanguards");
+					chambers().finishVanguards(true);
 				}
 
 				if (message.toLowerCase().contains("mystics")) {
 					raidTracker.setMysticsTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Mystics";
+					chambers().prepRoomFinished("Mystics");
 				}
 
 				if (message.toLowerCase().contains("tekton")) {
 					raidTracker.setTektonTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Tekton";
+					chambers().prepRoomFinished("Tekton");
 				}
 
 				if (message.toLowerCase().contains("muttadiles")) {
 					raidTracker.setMuttadilesTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Muttadiles";
+					chambers().prepRoomFinished("Muttadiles");
 				}
 
 				if (message.toLowerCase().contains("guardians")) {
 					raidTracker.setGuardiansTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Guardians";
+					chambers().prepRoomFinished("Guardians");
 				}
 
 				if (message.toLowerCase().contains("vespula")) {
 					raidTracker.setVespulaTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Vespula";
+					chambers().prepRoomFinished("Vespula");
 				}
 
 				if (message.toLowerCase().contains("ice demon")) {
 					raidTracker.setIceDemonTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Ice demon";
+					chambers().prepRoomFinished("Ice demon");
 				}
 
 				if (message.toLowerCase().contains("thieving")) {
 					raidTracker.setThievingTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Thieving";
+					chambers().prepRoomFinished("Thieving");
 				}
 
 				if (message.toLowerCase().contains("tightrope")) {
 					raidTracker.setTightropeTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Tightrope";
+					chambers().prepRoomFinished("Tightrope");
 				}
 
 				if (message.toLowerCase().contains("crabs")) {
 					raidTracker.setCrabsTime(stringTimeToSeconds(timeString.split(" ")[0]));
-					lastPrepRoom = "Crabs";
+					chambers().prepRoomFinished("Crabs");
 				}
-				chambersAnchorUnits = client.getVarbitValue(RAID_TIMER);
+				chambers().noteRoomClock();
 
 			}
 
+			// Shared by Chambers and Tombs. Only Chambers closes the death watch and stamps the Olm head.
 			if (message.startsWith(RAID_COMPLETE_MESSAGE_COX) || message.startsWith(RAID_COMPLETE_MESSAGE_TOA)) {
 				if (raidTracker.isInRaidChambers()) {
 					raidTracker.setTotalPoints(client.getVarbitValue(Varbits.TOTAL_POINTS));
 					raidTracker.setPersonalPoints(client.getVarpValue(VarPlayer.RAIDS_PERSONAL_POINTS));
-					raidTracker.setTeamSize(client.getVarbitValue(RAID_PARTY_SIZE));
-					if (pendingDeath && raidTracker.getPersonalPoints() > 0) {
-						absorbDeathPoints(raidTracker.getPersonalPoints());
-					}
-					pendingDeath = false;
-					stampOlmHead(client.getVarbitValue(RAID_TIMER));
+					raidTracker.setTeamSize(chambers().partySize());
+					chambers().finishDeathWatch(raidTracker.getPersonalPoints());
+					chambers().stampOlmHead(chambers().raidClock());
 				} else if (raidTracker.isInTombsOfAmascut()) {
 					raidTracker.setPersonalPoints(pointsTracker.getPersonalTotalPoints());
 				}
@@ -819,7 +801,7 @@ public class RaidTrackerPlugin extends Plugin
 				raidTracker.setDate(System.currentTimeMillis());
 			}
 
-			//the message after every completed tob wave.
+			// Theatre only.
 			if (message.toLowerCase().contains("wave '")) {
 				String wave = message.toLowerCase().split("'")[1];
 
@@ -845,6 +827,7 @@ public class RaidTrackerPlugin extends Plugin
 				}
 			}
 
+			// Tombs only.
 			if (message.contains("Challenge complete") || message.contains("total completion")) {
 				if ((m = TOA_ROOM_COMPLETE_PATTERN.matcher(message)).matches()) {
 					String room = m.group(1).toLowerCase();
@@ -898,30 +881,29 @@ public class RaidTrackerPlugin extends Plugin
 				}
 			}
 
+            // Theatre only.
             if ((m = TOB_COMPLETION_PATTERN.matcher(message)).matches()) {
                 raidTracker.setTobCompTime(stringTimeToSeconds(m.group(1)));
             }
 
+            // Theatre only.
             if ((m = TOB_TOTAL_COMPLETION_PATTERN.matcher(message)).matches()) {
                 raidTracker.setRaidTime(stringTimeToSeconds(m.group(1)));
             }
 
+            // Shared completion duration. Writes raidTime only, so it stays here.
             if (raidTracker.isRaidComplete() && message.contains("Team size:")) {
 				raidTracker.setRaidTime(stringTimeToSeconds(message.split("Duration: ")[1].split(" ")[0]));
 			}
 
-			//works for tob
+			// Shared. Chambers stores the count and tells the session. Theatre stores the team and marks the raid complete.
 			if (message.contains("count is:")) {
 				boolean chambersCount = message.contains("Chambers of Xeric");
 				int count = parseInt(message.split("count is:")[1].trim().replace(".", ""));
 				raidTracker.setChallengeMode(message.contains("Chambers of Xeric Challenge Mode"));
 				raidTracker.setCompletionCount(count);
 				if (chambersCount) {
-					if (raidTracker.isChallengeMode()) {
-						saveVanguard(vanguards.confirm(count));
-					} else {
-						dropVanguard(vanguards.discard());
-					}
+					chambers().onChambersKillCount(raidTracker.isChallengeMode(), count);
 				}
 				if (raidTracker.isInTheatreOfBlood()) {
 					int teamSize = 0;
@@ -937,13 +919,13 @@ public class RaidTrackerPlugin extends Plugin
 				}
 			}
 
-			// Only special loot should contain the " - " (except for the raid complete message in Cox)
+			// Shared. A Chambers purple is one uniques entry. Theatre and Tombs still use the loot fields and can write another line.
 			if (raidTracker.isRaidComplete() && message.contains(" - ") && !message.startsWith(RAID_COMPLETE_MESSAGE_COX)) {
 				String receiver = message.split(" - ")[0];
 				String item = message.split(" - ")[1];
 				boolean own = receiver.toLowerCase().trim().equals(playerName.toLowerCase().trim());
 				if (raidTracker.isInRaidChambers()) {
-					addChambersUnique(item, receiver, own, getItemPrice(itemManager.search(item).get(0)));
+					chambers().addChambersUnique(item, receiver, own, getItemPrice(itemManager.search(item).get(0)));
 				} else if (!raidTracker.getSpecialLootReceiver().isEmpty()) {
 					//in case of multiple purples, a new purple is stored on a new line in the file, so a new raidtracker object will be used and written to the file
 					RaidTracker altRT = copyData();
@@ -968,8 +950,7 @@ public class RaidTrackerPlugin extends Plugin
 				}
 			}
 
-			//for tob & toa it works a bit different, not possible to get duplicates.
-			//toa tested, tob untested in game
+			// Theatre and Tombs only. Chambers uniques are the branch above.
 			if (raidTracker.isRaidComplete() && !raidTracker.isInRaidChambers() && message.toLowerCase().contains("found something special") && !message.toLowerCase().contains("lil' zik") && !message.toLowerCase().contains("tumeken's guardian")) {
 				raidTracker.setSpecialLootReceiver(message.split(" found something special: ")[0]);
 				raidTracker.setSpecialLoot(message.split(" found something special: ")[1]);
@@ -981,13 +962,14 @@ public class RaidTrackerPlugin extends Plugin
 				setSplits(raidTracker);
 			}
 
+			// Shared shape. A Chambers kit is an uniques entry. Any other raid still uses kitReceiver.
 			if (raidTracker.isRaidComplete() && message.startsWith(TWISTED_KIT_RECIPIENTS)) {
 				String[] recipients = message.split(TWISTED_KIT_RECIPIENTS)[1].split(",");
 
 				for (String recip : recipients) {
 					String name = recip.trim();
 					if (raidTracker.isInRaidChambers()) {
-						addChambersUnique("Twisted Kit", name, receivedByYou(name, playerName), null);
+						chambers().addChambersUnique("Twisted Kit", name, chambers().receivedByYou(name, playerName), null);
 					} else if (raidTracker.getKitReceiver().isEmpty()) {
 						raidTracker.setKitReceiver(name);
 					}
@@ -1002,13 +984,14 @@ public class RaidTrackerPlugin extends Plugin
 				}
 			}
 
+			// Shared shape. Chambers dust is an uniques entry. Any other raid still uses dustReceiver.
 			if (raidTracker.isRaidComplete() && message.startsWith(DUST_RECIPIENTS)) {
 				String[] recipients = message.split(DUST_RECIPIENTS)[1].split(",");
 
 				for (String recip : recipients) {
 					String name = recip.trim();
 					if (raidTracker.isInRaidChambers()) {
-						addChambersUnique("Metamorphic Dust", name, receivedByYou(name, playerName), null);
+						chambers().addChambersUnique("Metamorphic Dust", name, chambers().receivedByYou(name, playerName), null);
 					} else if (raidTracker.getDustReceiver().isEmpty()) {
 						raidTracker.setDustReceiver(name);
 					}
@@ -1023,13 +1006,14 @@ public class RaidTrackerPlugin extends Plugin
 				}
 			}
 
+			// Shared. A Chambers pet is an uniques entry. Theatre and Tombs still use petReceiver and can write another line.
 			boolean petMessage = message.toLowerCase().contains("olmlet") || message.toLowerCase().contains("lil' zik")
 				|| message.toLowerCase().contains("tumeken's guardian") || message.toLowerCase().contains("would have been followed");
 			if (raidTracker.isInRaidChambers() && raidTracker.isRaidComplete() && petMessage) {
 				boolean duplicate = message.toLowerCase().contains("would have been followed");
 				String receiver = duplicate ? playerName : message.split(" ")[0];
 				boolean inOwnName = playerName.equals(message.split(" ")[0]) || duplicate;
-				addChambersUnique(petItemName(message), receiver, inOwnName, null);
+				chambers().addChambersUnique(chambers().petItemName(message), receiver, inOwnName, null);
 			} else if (raidTracker.isRaidComplete() && petMessage) {
 				boolean inOwnName = false;
 				boolean duplicate = message.toLowerCase().contains("would have been followed");
@@ -1117,10 +1101,7 @@ public class RaidTrackerPlugin extends Plugin
 
 		raidTracker.setInRaidChambers(client.getVarbitValue(Varbits.IN_RAID) == 1);
 		if (raidTracker.isInRaidChambers()) {
-			chambersLive = true;
-			chambersAnchorUnits = 0;
-			lastLiveSignature = Integer.MIN_VALUE;
-			beginVanguards();
+			chambers().enteredRaid();
 		}
 	}
 
@@ -1168,7 +1149,7 @@ public class RaidTrackerPlugin extends Plugin
         raidTracker.setProfileType(String.valueOf(RuneScapeProfileType.getCurrent(client)));
 		writerStarted = false;
 		raidStarted = false;
-		resetChambersState();
+		chambers().resetChambersState();
 	}
 
 	@Subscribe
@@ -1176,14 +1157,8 @@ public class RaidTrackerPlugin extends Plugin
 		if (WorldUtils.playerOnUntrackedWorld(client)) {
 			return;
 		}
-		NPC npc = event.getNpc();
-		if (npc == null) {
-			return;
-		}
-		if (trackingChambersOlm() && isMageHand(npc.getId())) {
-			olmPhaseStarted(client.getVarbitValue(RAID_TIMER));
-		}
-		vanguardSpawned(npc);
+		// Chambers only: a mage hand starts an Olm phase, and a Vanguard spawn is the study.
+		chambers().npcSpawned(event.getNpc());
 	}
 
 	@Subscribe
@@ -1191,408 +1166,33 @@ public class RaidTrackerPlugin extends Plugin
 		if (WorldUtils.playerOnUntrackedWorld(client) || event.getNpc() == null) {
 			return;
 		}
-		NPC npc = event.getNpc();
-		String style = VanguardNpcs.style(npc.getId());
-		if (style != null) {
-			vanguardSpawned(npc);
-			return;
-		}
-		if (npc.getId() == VanguardNpcs.WALKING && event.getOld() != null) {
-			String from = VanguardNpcs.style(event.getOld().getId());
-			if (from != null) {
-				vanguardDig(from, npc);
-			}
-		}
+		chambers().npcChanged(event.getNpc(), event.getOld());
 	}
 
 	@Subscribe
 	public void onNpcDespawned(NpcDespawned event) {
-		if (!watchingVanguards() || event.getNpc() == null) {
-			return;
-		}
-		if (VanguardNpcs.style(event.getNpc().getId()) != null) {
-			vanguards.combatGone();
-		}
+		chambers().npcDespawned(event.getNpc());
 	}
 
 	@Subscribe
 	public void onHitsplatApplied(HitsplatApplied event) {
-		if (!watchingVanguards() || !(event.getActor() instanceof NPC)) {
-			return;
-		}
-		NPC npc = (NPC) event.getActor();
-		if (VanguardNpcs.isVanguard(npc.getId()) && event.getHitsplat() != null
-			&& event.getHitsplat().getHitsplatType() == HitsplatID.HEAL) {
-			vanguards.heal();
-		}
+		chambers().hitsplatApplied(event.getActor(), event.getHitsplat());
 	}
 
 	@Subscribe
 	public void onActorDeath(ActorDeath event) {
-		if (WorldUtils.playerOnUntrackedWorld(client) || !trackingChambersOlm()) {
+		if (WorldUtils.playerOnUntrackedWorld(client)) {
 			return;
 		}
-		Actor actor = event.getActor();
-		if (!(actor instanceof NPC)) {
-			return;
-		}
-		int id = ((NPC) actor).getId();
-		int timer = client.getVarbitValue(RAID_TIMER);
-		if (isMageHand(id)) {
-			mageHandDown(timer);
-		} else if (isMeleeHand(id)) {
-			meleeHandDown(timer);
-		}
+		chambers().actorDied(event.getActor());
 	}
 
 	@Subscribe
 	public void onGameObjectSpawned(GameObjectSpawned event) {
-		if (WorldUtils.playerOnUntrackedWorld(client) || !trackingChambersOlm()) {
+		if (WorldUtils.playerOnUntrackedWorld(client) || event.getGameObject() == null) {
 			return;
 		}
-		if (event.getGameObject() != null && event.getGameObject().getId() == OLM_ENCOUNTER) {
-			olmPhaseStarted(client.getVarbitValue(RAID_TIMER));
-		}
-	}
-
-	private boolean trackingChambersOlm() {
-		return raidTracker.isInRaidChambers() && !raidTracker.isRaidComplete();
-	}
-
-	private boolean isMageHand(int id) {
-		return id == OLM_MAGE_HAND || id == OLM_MAGE_HAND_CM;
-	}
-
-	private boolean isMeleeHand(int id) {
-		return id == OLM_MELEE_HAND || id == OLM_MELEE_HAND_CM;
-	}
-
-	/** Raid-clock split from a mage-hand spawn, or the Olm encounter object. */
-	public void olmPhaseStarted(int timerUnits) {
-		if (!trackingChambersOlm() || olmPhaseStartUnits >= 0 || olmHeadStartUnits >= 0) {
-			return;
-		}
-		olmPhaseStartUnits = timerUnits;
-		olmMageRecorded = false;
-		olmFightStarted = true;
-	}
-
-	/** Mage hand down. The last phase has no mage-hand split. */
-	public void mageHandDown(int timerUnits) {
-		if (!trackingChambersOlm() || olmPhaseStartUnits < 0 || olmMageRecorded) {
-			return;
-		}
-		if (olmPhase < expectedOlmPhases()) {
-			addOlmSeconds(raidTracker.getOlmMageHandTimes(), timerUnits - olmPhaseStartUnits, true);
-		}
-		olmMageRecorded = true;
-	}
-
-	/** Melee hand down. Starts the head once the last phase ends. */
-	public void meleeHandDown(int timerUnits) {
-		if (!trackingChambersOlm() || olmPhaseStartUnits < 0) {
-			return;
-		}
-		addOlmSeconds(raidTracker.getOlmPhaseTimes(), timerUnits - olmPhaseStartUnits, false);
-		int finished = olmPhase;
-		olmPhase++;
-		olmPhaseStartUnits = -1;
-		olmMageRecorded = false;
-		if (finished >= expectedOlmPhases() && olmHeadStartUnits < 0) {
-			olmHeadStartUnits = timerUnits;
-		}
-	}
-
-	public void stampOlmHead(int timerUnits) {
-		if (!raidTracker.isInRaidChambers() || olmHeadStartUnits < 0 || raidTracker.getOlmHeadTime() > 0) {
-			return;
-		}
-		int seconds = raidClockSeconds(timerUnits - olmHeadStartUnits);
-		if (seconds > 0) {
-			raidTracker.setOlmHeadTime(seconds);
-		}
-	}
-
-	private void addOlmSeconds(ArrayList<Integer> times, int unitDelta, boolean mageHand) {
-		int seconds = raidClockSeconds(unitDelta);
-		if (seconds <= 0) {
-			return;
-		}
-		ArrayList<Integer> list = times;
-		if (list == null) {
-			list = new ArrayList<>();
-			if (mageHand) {
-				raidTracker.setOlmMageHandTimes(list);
-			} else {
-				raidTracker.setOlmPhaseTimes(list);
-			}
-		}
-		list.add(seconds);
-	}
-
-	private int expectedOlmPhases() {
-		int size = client.getVarbitValue(RAID_PARTY_SIZE);
-		if (size <= 0 || size > 100) {
-			size = raidTracker.getTeamSize();
-		}
-		if (size <= 0 || size > 100) {
-			size = 1;
-		}
-		return 3 + (size / 8);
-	}
-
-	/** 100 raid-clock units is one minute. Leftover units are 0.6 seconds. */
-	private int raidClockSeconds(int units) {
-		if (units <= 0) {
-			return 0;
-		}
-		int minutes = units / 100;
-		int seconds = (units % 100) * 6 / 10;
-		return minutes * 60 + seconds;
-	}
-
-	public void notePersonalPoints(int pointsNow) {
-		if (!raidTracker.isInRaidChambers() || raidTracker.isRaidComplete() || pointsNow <= 0) {
-			return;
-		}
-		if (pendingDeath) {
-			absorbDeathPoints(pointsNow);
-			pendingTicks--;
-			if (pendingTicks <= 0) {
-				pendingDeath = false;
-			}
-		}
-		lastPersonalPoints = pointsNow;
-	}
-
-	private void recordChambersDeath() {
-		if (!raidTracker.isInRaidChambers() || raidTracker.isRaidComplete()) {
-			return;
-		}
-		int pointsNow = lastPersonalPoints;
-		if (pendingDeath) {
-			absorbDeathPoints(pointsNow);
-			pendingDeath = false;
-		}
-		int baseline = lastPersonalPoints > 0 ? lastPersonalPoints : Math.max(0, pointsNow);
-		ChambersDeath death = new ChambersDeath();
-		death.setRoom(chambersDeathRoom());
-		death.setPointsLost(0);
-		if (raidTracker.getDeaths() == null) {
-			raidTracker.setDeaths(new ArrayList<>());
-		}
-		raidTracker.getDeaths().add(death);
-		pendingDeath = true;
-		pendingBaseline = baseline;
-		pendingMin = Math.max(0, pointsNow);
-		pendingTicks = DEATH_POINT_TICKS;
-		absorbDeathPoints(pointsNow);
-		vanguards.noteDeaths(raidTracker.getDeaths().size());
-	}
-
-	private void absorbDeathPoints(int pointsNow) {
-		if (pointsNow > 0 && pointsNow < pendingMin) {
-			pendingMin = pointsNow;
-		}
-		if (pendingBaseline > pendingMin && raidTracker.getDeaths() != null && !raidTracker.getDeaths().isEmpty()) {
-			ChambersDeath death = raidTracker.getDeaths().get(raidTracker.getDeaths().size() - 1);
-			if (death != null) {
-				death.setPointsLost(pendingBaseline - pendingMin);
-			}
-		}
-	}
-
-	/**
-	 * Olm once a phase or the head has started.
-	 * On the fixed layout, the next room only when nothing sits between it and the room that just finished.
-	 */
-	private String chambersDeathRoom() {
-		if (olmFightStarted || olmHeadStartUnits >= 0) {
-			return "Olm";
-		}
-		if (lastPrepRoom.isEmpty()) {
-			return "Tekton";
-		}
-		if ("Tekton".equals(lastPrepRoom)) {
-			return "Crabs";
-		}
-		if ("Ice demon".equals(lastPrepRoom)) {
-			return "Shamans";
-		}
-		if ("Vanguards".equals(lastPrepRoom)) {
-			return "Thieving";
-		}
-		if ("Guardians".equals(lastPrepRoom)) {
-			return "Vasa";
-		}
-		if ("Mystics".equals(lastPrepRoom)) {
-			return "Muttadiles";
-		}
-		return null;
-	}
-
-	public void settleChambersDeathRooms(RaidTracker raidTracker) {
-		if (raidTracker == null || raidTracker.isChallengeMode() || prepRoomsLogged(raidTracker) >= FULL_LAYOUT_PREP_ROOMS) {
-			return;
-		}
-		if (raidTracker.getDeaths() == null) {
-			return;
-		}
-		for (int i = 0; i < raidTracker.getDeaths().size(); i++) {
-			ChambersDeath death = raidTracker.getDeaths().get(i);
-			if (death != null) {
-				death.setRoom(null);
-			}
-		}
-	}
-
-	private int prepRoomsLogged(RaidTracker raidTracker) {
-		int count = 0;
-		if (raidTracker.getTektonTime() > 0) count++;
-		if (raidTracker.getCrabsTime() > 0) count++;
-		if (raidTracker.getIceDemonTime() > 0) count++;
-		if (raidTracker.getShamansTime() > 0) count++;
-		if (raidTracker.getVanguardsTime() > 0) count++;
-		if (raidTracker.getThievingTime() > 0) count++;
-		if (raidTracker.getVespulaTime() > 0) count++;
-		if (raidTracker.getTightropeTime() > 0) count++;
-		if (raidTracker.getGuardiansTime() > 0) count++;
-		if (raidTracker.getVasaTime() > 0) count++;
-		if (raidTracker.getMysticsTime() > 0) count++;
-		if (raidTracker.getMuttadilesTime() > 0) count++;
-		return count;
-	}
-
-	private void addChambersUnique(String item, String receiver, boolean own, Integer value) {
-		if (item == null || item.isEmpty()) {
-			return;
-		}
-		if (raidTracker.getUniques() == null) {
-			raidTracker.setUniques(new ArrayList<>());
-		}
-		UniqueDrop drop = new UniqueDrop();
-		drop.setItem(item);
-		drop.setReceiver(receiver == null ? "" : receiver.trim());
-		drop.setOwn(own);
-		if (value != null) {
-			drop.setValue(value);
-			applyChambersSplit(drop);
-		}
-		raidTracker.getUniques().add(drop);
-	}
-
-	private void applyChambersSplit(UniqueDrop drop) {
-		int price = drop.getValue();
-		int team = raidTracker.getTeamSize();
-		if (team <= 0) {
-			team = 1;
-		}
-		int lootSplit = price / team;
-		int cutoff = config.FFACutoff();
-		if (config.defaultFFA() || lootSplit < cutoff) {
-			drop.setFreeForAll(true);
-			if (drop.isOwn()) {
-				drop.setSplitReceived(price);
-			}
-		} else if (drop.isOwn()) {
-			drop.setSplitPaid(price - lootSplit);
-			drop.setSplitReceived(lootSplit);
-		} else {
-			drop.setSplitReceived(lootSplit);
-		}
-	}
-
-	private boolean receivedByYou(String receiver, String playerName) {
-		return receiver != null && playerName != null && receiver.toLowerCase().equals(playerName.toLowerCase().trim());
-	}
-
-	private String petItemName(String message) {
-		String lower = message.toLowerCase();
-		if (lower.contains("lil' zik")) {
-			return "Lil' Zik";
-		}
-		if (lower.contains("tumeken")) {
-			return "Tumeken's guardian";
-		}
-		return "Olmlet";
-	}
-
-	private void resetChambersState() {
-		olmPhaseStartUnits = -1;
-		olmPhase = 1;
-		olmMageRecorded = false;
-		olmHeadStartUnits = -1;
-		olmFightStarted = false;
-		lastPrepRoom = "";
-		pendingDeath = false;
-		pendingBaseline = 0;
-		pendingMin = 0;
-		pendingTicks = 0;
-		lastPersonalPoints = 0;
-		chambersLive = false;
-		chambersAnchorUnits = 0;
-		lastLiveSignature = Integer.MIN_VALUE;
-	}
-
-	/** Refresh the Times page from the raid in memory. A closed sidebar and a steady clock do nothing. */
-	private void pushLiveChambers() {
-		int open = openChambersSeconds();
-		int signature = open;
-		signature = 31 * signature + raidTracker.getRaidTime();
-		signature = 31 * signature + raidTracker.getLowerTime();
-		signature = 31 * signature + raidTracker.getOlmHeadTime();
-		signature = 31 * signature + raidTracker.getPersonalPoints();
-		signature = 31 * signature + raidTracker.getTektonTime();
-		signature = 31 * signature + raidTracker.getCrabsTime();
-		signature = 31 * signature + raidTracker.getIceDemonTime();
-		signature = 31 * signature + raidTracker.getShamansTime();
-		signature = 31 * signature + raidTracker.getVanguardsTime();
-		signature = 31 * signature + raidTracker.getThievingTime();
-		signature = 31 * signature + raidTracker.getVespulaTime();
-		signature = 31 * signature + raidTracker.getTightropeTime();
-		signature = 31 * signature + raidTracker.getGuardiansTime();
-		signature = 31 * signature + raidTracker.getVasaTime();
-		signature = 31 * signature + raidTracker.getMysticsTime();
-		signature = 31 * signature + raidTracker.getMuttadilesTime();
-		signature = 31 * signature + listSignature(raidTracker.getOlmMageHandTimes());
-		signature = 31 * signature + listSignature(raidTracker.getOlmPhaseTimes());
-		if (signature == lastLiveSignature) {
-			return;
-		}
-		lastLiveSignature = signature;
-		RaidTracker snap = ChambersFacts.copyTimes(raidTracker);
-		int shown = open;
-		SwingUtilities.invokeLater(() -> panel.showLiveChambers(snap, shown));
-	}
-
-	private int openChambersSeconds() {
-		if (!chambersLive || !raidTracker.isInRaidChambers() || raidTracker.isRaidComplete()) {
-			return -1;
-		}
-		int now = client.getVarbitValue(RAID_TIMER);
-		int from = chambersAnchorUnits;
-		if (olmPhaseStartUnits >= 0) {
-			from = olmPhaseStartUnits;
-		} else if (olmHeadStartUnits >= 0) {
-			from = olmHeadStartUnits;
-		}
-		int units = now - from;
-		if (units < 0) {
-			units = 0;
-		}
-		return raidClockSeconds(units);
-	}
-
-	private static int listSignature(java.util.List<Integer> values) {
-		int signature = 1;
-		if (values == null) {
-			return signature;
-		}
-		for (int i = 0; i < values.size() && i < 8; i++) {
-			Integer value = values.get(i);
-			signature = 31 * signature + (value == null ? 0 : value);
-		}
-		return signature;
+		chambers().olmObjectSpawned(event.getGameObject().getId());
 	}
 
 	//from stackoverflow
@@ -1689,165 +1289,6 @@ public class RaidTrackerPlugin extends Plugin
 			return Integer.MIN_VALUE;
 		}
 		return (int) price;
-	}
-
-	private void beginVanguards() {
-		saveVanguard(vanguards.finish(false, raidClock()));
-		if (!config.trackVanguards()) {
-			vanguards.discard();
-			clearVanguardFile();
-			return;
-		}
-		bindVanguardFile();
-		if (vanguardKey == null) {
-			vanguards.discard();
-			return;
-		}
-		vanguards.startRaid(Instant.now().truncatedTo(ChronoUnit.SECONDS).toString(), client.getVarbitValue(RAID_PARTY_SIZE));
-		if (client.getVarbitValue(CHALLENGE_MODE) != 0) {
-			vanguards.allowChallengeMode();
-		}
-	}
-
-	private void leaveVanguards() {
-		saveVanguard(vanguards.finish(false, raidClock()));
-		vanguards.discard();
-		clearVanguardFile();
-	}
-
-	private void finishVanguards(boolean finished) {
-		if (raidTracker.getDeaths() != null) {
-			vanguards.noteDeaths(raidTracker.getDeaths().size());
-		}
-		saveVanguard(vanguards.finish(finished, raidClock()));
-	}
-
-	private void watchVanguards() {
-		if (!watchingVanguards() || !vanguards.isTiming()) {
-			return;
-		}
-		vanguards.tick();
-		if (!vanguards.needsHealth()) {
-			return;
-		}
-		for (NPC npc : client.getNpcs()) {
-			String style = VanguardNpcs.style(npc.getId());
-			if (style != null && npc.getHealthScale() > 0) {
-				vanguards.seen(style, npc.getHealthRatio(), npc.getHealthScale());
-			}
-		}
-	}
-
-	private boolean watchingVanguards() {
-		if (!config.trackVanguards() || !raidTracker.isInRaidChambers() || raidTracker.isRaidComplete()) {
-			return false;
-		}
-		if (client.getVarbitValue(CHALLENGE_MODE) != 0) {
-			vanguards.allowChallengeMode();
-		}
-		return vanguards.isChallengeMode();
-	}
-
-	private void vanguardSpawned(NPC npc) {
-		String style = VanguardNpcs.style(npc.getId());
-		if (style == null || !watchingVanguards()) {
-			return;
-		}
-		int[] at = vanguardCenter(npc);
-		if (at == null) {
-			return;
-		}
-		if (vanguards.needsContact()) {
-			int deaths = raidTracker.getDeaths() == null ? 0 : raidTracker.getDeaths().size();
-			vanguards.contact(
-				Instant.now().truncatedTo(ChronoUnit.SECONDS).toString(),
-				client.getWorld(),
-				client.getVarbitValue(RAID_PARTY_SIZE),
-				raidClock(),
-				deaths);
-		}
-		vanguards.emerge(style, at[0], at[1]);
-	}
-
-	private void vanguardDig(String style, NPC npc) {
-		if (!watchingVanguards()) {
-			return;
-		}
-		int[] at = vanguardCenter(npc);
-		if (at == null) {
-			return;
-		}
-		vanguards.dig(style, at[0], at[1], npc.getHealthRatio(), npc.getHealthScale(), npc.getAnimation());
-	}
-
-	private static int[] vanguardCenter(NPC npc) {
-		WorldPoint southwest = npc.getWorldLocation();
-		if (southwest == null) {
-			return null;
-		}
-		int size = 3;
-		if (npc.getComposition() != null && npc.getComposition().getSize() > 0) {
-			size = npc.getComposition().getSize();
-		}
-		int nudge = Math.max(0, (size - 1) / 2);
-		return new int[] {southwest.getX() + nudge, southwest.getY() + nudge};
-	}
-
-	private void bindVanguardFile() {
-		if (vanguardKey != null && vanguardDirectory != null) {
-			return;
-		}
-		long hash = client.getAccountHash();
-		String directory = fw.getCoxDirectory();
-		if (hash == 0L || hash == -1L || directory == null) {
-			return;
-		}
-		String key = Long.toUnsignedString(hash);
-		if (fw.isLeague()) {
-			key = key + FileReadWriter.LEAGUE_SUFFIX;
-		}
-		vanguardKey = key;
-		vanguardDirectory = directory;
-	}
-
-	private void clearVanguardFile() {
-		vanguardKey = null;
-		vanguardDirectory = null;
-	}
-
-	private void saveVanguard(VanguardSample sample) {
-		if (sample == null) {
-			return;
-		}
-		bindVanguardFile();
-		if (vanguardKey == null || vanguardDirectory == null) {
-			return;
-		}
-		try {
-			vanguardLog.saveLater(vanguardDirectory, vanguardKey, sample);
-			log.info("Logged Chambers vanguards world {} kc {} uptimes {}", sample.getWorld(), sample.getKc(), sample.getUptimes().size());
-		} catch (IOException ex) {
-			log.warn("Could not write the vanguard log", ex);
-		}
-	}
-
-	private void dropVanguard(String id) {
-		if (id == null) {
-			return;
-		}
-		bindVanguardFile();
-		if (vanguardKey == null || vanguardDirectory == null) {
-			return;
-		}
-		try {
-			vanguardLog.removeLater(vanguardDirectory, vanguardKey, id);
-		} catch (IOException ex) {
-			log.warn("Could not update the vanguard log", ex);
-		}
-	}
-
-	private int raidClock() {
-		return client.getVarbitValue(RAID_TIMER);
 	}
 
     public void updateCurrentRT(RaidType raidType) {

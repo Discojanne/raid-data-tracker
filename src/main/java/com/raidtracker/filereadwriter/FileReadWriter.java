@@ -99,14 +99,12 @@ public class FileReadWriter {
 			log.warn("writeToFile called without an inRaid flag set.", new IllegalStateException());
 		}
 
-        try {
+		JsonParser parser = new JsonParser();
+		String line = getJSONString(raidTracker, gson, parser, raidType);
+        try (FileWriter fw = new FileWriter(fileName, true)) {
 			log.debug("writer started");
-			//use json format so serializing and deserializing is easy
-			JsonParser parser = new JsonParser();
-			FileWriter fw = new FileWriter(fileName,true); //the true will append the new data
-			gson.toJson(parser.parse(getJSONString(raidTracker, gson, parser, raidType)), fw);
-			fw.append("\n");
-			fw.close();
+			fw.write(line);
+			fw.write('\n');
         } catch (IOException ioe) {
 			log.error("IOException: {} in writeToFile", ioe.getMessage());
 		}
@@ -133,21 +131,18 @@ public class FileReadWriter {
 			raidTracker.setUniques(new ArrayList<>());
 		}
 
-		JsonObject RTJson =  parser.parse(gson.toJson(raidTracker)).getAsJsonObject();
+		JsonObject RTJson = parser.parse(gson.toJson(raidTracker)).getAsJsonObject();
 
+		// The chest loot stays a JSON array. A string property here used to be unwrapped with a global replace.
+		JsonArray lootJson = new JsonArray();
 		List<RaidTrackerItem> lootList = raidTracker.getLootList();
-
-		//------------------ temporary fix until I can get gson.tojson to work for arraylist<RaidTrackerItem> ---------
-		JsonArray lootListToString = new JsonArray();
-
-		for (RaidTrackerItem item : lootList) {
-			lootListToString.add(parser.parse(gson.toJson(item, new TypeToken<RaidTrackerItem>() {
-			}.getType())));
+		if (lootList != null) {
+			for (RaidTrackerItem item : lootList) {
+				lootJson.add(parser.parse(gson.toJson(item, new TypeToken<RaidTrackerItem>() {
+				}.getType())));
+			}
 		}
-
-		RTJson.addProperty("lootList", lootListToString.toString());
-
-		//-------------------------------------------------------------------------------------------------------------
+		RTJson.add("lootList", lootJson);
 
 		if (raidType == RaidType.COX) {
 			JsonObject chambersJson = new JsonObject();
@@ -159,8 +154,7 @@ public class FileReadWriter {
 			RTJson = chambersJson;
 		}
 
-		//massive bodge, works for now
-        return RTJson.toString().replace("\\\"", "\"").replace("\"[", "[").replace("]\"", "]");
+        return gson.toJson(RTJson);
 	}
 
 	private boolean includeChambersField(String field, JsonElement value) {
@@ -310,22 +304,20 @@ public class FileReadWriter {
 			JsonParser parser = new JsonParser();
             String fileName = getRaidFileName(raidType);
 			ArrayList<RaidTracker> RTList = readFromFile(raidType);
-
-			FileWriter fw = new FileWriter(fileName, false); // the true will append the new data
+			StringBuilder body = new StringBuilder();
 
 			for (RaidTracker RT : RTList) {
-
 				if (RT.getUniqueID().equals(raidTracker.getUniqueID()) && !RT.equals(raidTracker)) {
 					log.debug("writer updated log");
 					RT = raidTracker;
 				}
-
-				gson.toJson(parser.parse(getJSONString(RT, gson, parser, raidType)), fw);
-
-				fw.append("\n");
+				body.append(getJSONString(RT, gson, parser, raidType));
+				body.append('\n');
 			}
 
-			fw.close();
+			try (FileWriter fw = new FileWriter(fileName, false)) {
+				fw.write(body.toString());
+			}
 		} catch (IOException e) {
 			log.error("Error occurred updating the log", e);
 		}
@@ -335,7 +327,7 @@ public class FileReadWriter {
 		try {
 			JsonParser parser = new JsonParser();
             String fileName = getRaidFileName(raidType);
-			FileWriter fw = new FileWriter(fileName, false); // the true will append the new data
+			StringBuilder body = new StringBuilder();
 
 			for (RaidTracker RT : RTList) {
 				if (RT.getLootSplitPaid() > 0) {
@@ -347,13 +339,13 @@ public class FileReadWriter {
                             && RT.getLootList().get(0).getName().equalsIgnoreCase(specialLoot));
 				}
 
-				gson.toJson(parser.parse(getJSONString(RT, gson, parser, raidType)), fw);
-
-				fw.append("\n");
+				body.append(getJSONString(RT, gson, parser, raidType));
+				body.append('\n');
 			}
 
-			fw.close();
-
+			try (FileWriter fw = new FileWriter(fileName, false)) {
+				fw.write(body.toString());
+			}
 		} catch (IOException e) {
 			log.error("Error occurred updating the log list", e);
 		}

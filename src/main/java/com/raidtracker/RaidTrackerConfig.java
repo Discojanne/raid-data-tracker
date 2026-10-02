@@ -184,17 +184,6 @@ public interface RaidTrackerConfig extends Config
 		return 600;
 	}
 
-	@ConfigItem(
-		keyName = "useTbow",
-		name = "Using Twisted bow",
-		description = "Off adds 6 seconds to Shamans, 2 seconds to Vanguards, 8 seconds to Tightrope when killing rope is on, 30 seconds to Vasa, 10 seconds to Muttadiles, and 20 seconds to Olm head.",
-		position = 0
-	)
-	default boolean useTbow()
-	{
-		return true;
-	}
-
 	@ConfigSection(
 		name = "Other",
 		description = "Settings that are not part of a raid target.",
@@ -240,11 +229,23 @@ public interface RaidTrackerConfig extends Config
 	String moneyRunSection = "moneyRunSection";
 
 	@ConfigItem(
+		keyName = "useTbow",
+		name = "Using Twisted bow",
+		description = "Off adds 6 seconds to Shamans, 2 seconds to Vanguards, 8 seconds to Tightrope when killing rope is on, 30 seconds to Vasa, 10 seconds to Muttadiles, and 20 seconds to Olm head.",
+		section = "itemSection",
+		position = 0
+	)
+	default boolean useTbow()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "slayerHelm",
 		name = "Slayer helm",
 		description = "Off adds 9 seconds to Shamans.",
 		section = "itemSection",
-		position = 0
+		position = 1
 	)
 	default boolean slayerHelm()
 	{
@@ -256,7 +257,7 @@ public interface RaidTrackerConfig extends Config
 		name = "Lockpick",
 		description = "Off adds 4 seconds to Thieving.",
 		section = "itemSection",
-		position = 1
+		position = 2
 	)
 	default boolean lockpick()
 	{
@@ -268,7 +269,7 @@ public interface RaidTrackerConfig extends Config
 		name = "Axe",
 		description = "Off adds 5 seconds to Ice demon.",
 		section = "itemSection",
-		position = 2
+		position = 3
 	)
 	default boolean axe()
 	{
@@ -280,7 +281,7 @@ public interface RaidTrackerConfig extends Config
 		name = "Salve",
 		description = "Off adds 5 seconds to Mystics.",
 		section = "itemSection",
-		position = 3
+		position = 4
 	)
 	default boolean salve()
 	{
@@ -399,7 +400,7 @@ public interface RaidTrackerConfig extends Config
 	@ConfigItem(
 		keyName = "overThieve",
 		name = "Over-thieve",
-		description = "On adds 7 seconds to Thieving.",
+		description = "On adds 4 seconds to Thieving.",
 		section = "moneyRunSection",
 		position = 4
 	)

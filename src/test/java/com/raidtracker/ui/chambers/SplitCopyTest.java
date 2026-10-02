@@ -82,6 +82,7 @@ public class SplitCopyTest {
 	@Test
 	public void copyTitleUsesTheBadgeThenTheBestChoice() {
 		Assert.assertEquals("Last 10", ChambersTimesView.copyTitle("Target", "Splits", "Last", 10, "CM 4"));
+		Assert.assertEquals("Avg vs Trg", ChambersTimesView.copyTitle("Target", "Splits", "Avg", 10, ""));
 		Assert.assertEquals("CM 221", ChambersTimesView.copyTitle("Average", null, "This", 10, "CM 221"));
 		Assert.assertEquals("In progress", ChambersTimesView.copyTitle("Target", null, "This", 10, "In progress"));
 		Assert.assertEquals("Splits", ChambersTimesView.copyTitle("Best", "Splits", "This", 10, "Fastest in this filter"));

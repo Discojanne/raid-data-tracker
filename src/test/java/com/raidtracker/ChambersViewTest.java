@@ -222,12 +222,24 @@ public class ChambersViewTest {
 		regular.setShamansTime(63);
 		ChambersTimes.Table blank = ChambersTargets.compare(Arrays.asList(regular), null, -1, blankShamans, ChambersFilter.ALL, ChambersFilter.SOLO, false, 10);
 		Assert.assertNull(row(blank, "Shamans").delta);
-		Assert.assertEquals("25:34", ChambersTargets.settingsTotal(new RaidTrackerConfig() {
+		Assert.assertEquals("+ 0:04", ChambersTargets.addNote(slower, "Crabs"));
+		Assert.assertEquals("+ 0:06", ChambersTargets.addNote(slower, "Shamans"));
+		Assert.assertEquals("+ 1:10", ChambersTargets.addNote(slower, "Ice demon"));
+		Assert.assertEquals("", ChambersTargets.addNote(blankShamans, "Shamans"));
+		Assert.assertEquals("+ 0:04", ChambersTargets.addNote(new RaidTrackerConfig() {
+			@Override
+			public boolean overThieve() {
+				return true;
+			}
+		}, "Thieving"));
+		RaidTrackerConfig crabOff = new RaidTrackerConfig() {
 			@Override
 			public boolean crabTank() {
 				return false;
 			}
-		}));
+		};
+		Assert.assertEquals("25:34", ChambersTargets.settingsTotal(crabOff));
+		Assert.assertEquals("+ 0:04", ChambersTargets.addNote(crabOff, "Target total"));
 	}
 
 	@Test
@@ -261,6 +273,37 @@ public class ChambersViewTest {
 		ChambersTimes.Table lastTwo = ChambersTargets.compare(Arrays.asList(earlier, latest), null, -1, config, ChambersFilter.CM, ChambersFilter.SOLO, true, 2);
 		Assert.assertEquals("1:10", row(lastTwo, "Tekton").value);
 		Assert.assertEquals(Integer.valueOf(0), row(lastTwo, "Tekton").delta);
+	}
+
+	@Test
+	public void averageVersusTargetShowsTheAverageAndHowFarItSitsFromTheTarget() {
+		RaidTrackerConfig config = new RaidTrackerConfig() {};
+		RaidTracker slower = raid();
+		slower.setChallengeMode(true);
+		slower.setTeamSize(1);
+		slower.setTektonTime(90);
+		RaidTracker faster = raid();
+		faster.setChallengeMode(true);
+		faster.setTeamSize(1);
+		faster.setTektonTime(50);
+		RaidTracker tooShort = raid();
+		tooShort.setChallengeMode(true);
+		tooShort.setTeamSize(1);
+		tooShort.setTektonTime(5);
+		ChambersTimes.Table even = ChambersTargets.averageVersusTarget(Arrays.asList(slower, faster, tooShort), config);
+		Assert.assertEquals("1:10", row(even, "Tekton").value);
+		Assert.assertEquals("0:00", row(even, "Tekton").aside);
+		Assert.assertEquals(Integer.valueOf(0), row(even, "Tekton").delta);
+
+		RaidTracker behind = raid();
+		behind.setChallengeMode(true);
+		behind.setTeamSize(1);
+		behind.setTektonTime(100);
+		ChambersTimes.Table late = ChambersTargets.averageVersusTarget(Arrays.asList(behind, slower), config);
+		Assert.assertEquals("1:35", row(late, "Tekton").value);
+		Assert.assertEquals("+0:25", row(late, "Tekton").aside);
+		Assert.assertEquals(Integer.valueOf(25), row(late, "Tekton").delta);
+		Assert.assertEquals(-25, mark(late, "Tekton"));
 	}
 
 	@Test
@@ -305,6 +348,46 @@ public class ChambersViewTest {
 		Assert.assertEquals("25:30", total.getText());
 		Assert.assertTrue(body.getComponent(0) instanceof JButton);
 		Assert.assertEquals("Reset to default", ((JButton) body.getComponent(0)).getText());
+	}
+
+	@Test
+	public void resetStaysOffTheSidebarWhenARoomNoteIsColored() {
+		JPanel shell = new JPanel();
+		JPanel tracker = new JPanel();
+		JLabel trackerRoom = new JLabel("Tekton");
+		tracker.add(trackerRoom);
+		shell.add(tracker);
+
+		JPanel config = new JPanel();
+		config.add(new JLabel("Raid Data Tracker"));
+		JPanel section = new JPanel();
+		JPanel header = new JPanel();
+		header.add(new JLabel("Target times"));
+		JPanel body = new JPanel();
+		JPanel totalRow = new JPanel();
+		totalRow.add(new JLabel("Target total"));
+		totalRow.add(new JTextArea("25:30"));
+		body.add(totalRow);
+		JPanel tektonRow = new JPanel();
+		tektonRow.add(new JLabel("Tekton"));
+		tektonRow.add(new JTextArea("1:10"));
+		body.add(tektonRow);
+		section.add(header);
+		section.add(body);
+		config.add(section);
+		shell.add(config);
+
+		TargetTimeSettings settings = new TargetTimeSettings(new RaidTrackerConfig() {
+			@Override
+			public boolean preVeng() {
+				return false;
+			}
+		}, null);
+		settings.notice(section);
+		settings.notice(trackerRoom);
+
+		Assert.assertEquals(1, tracker.getComponentCount());
+		Assert.assertTrue(body.getComponent(0) instanceof JButton);
 	}
 
 	@Test
@@ -390,19 +473,18 @@ public class ChambersViewTest {
 		raid.getDeaths().add(second);
 		ChambersPurples board = ChambersPurples.of(Arrays.asList(raid));
 		Assert.assertEquals(15000, board.pointsLost);
-		Assert.assertEquals(1, board.deathRaids);
-		Assert.assertEquals(2, board.deaths.size());
-		Assert.assertEquals("Crabs", board.deaths.get(0).room);
-		Assert.assertEquals(7000, board.deaths.get(0).pointsLost);
-		Assert.assertEquals("Tekton", board.deaths.get(1).room);
-		Assert.assertEquals(8000, board.deaths.get(1).pointsLost);
+		Assert.assertEquals(2, board.rooms.size());
+		Assert.assertEquals("Crabs", board.rooms.get(0).name);
+		Assert.assertEquals(1, board.rooms.get(0).deaths);
+		Assert.assertEquals("Tekton", board.rooms.get(1).name);
+		Assert.assertEquals(1, board.rooms.get(1).deaths);
 
 		ChambersDeath unnamed = new ChambersDeath();
 		unnamed.setPointsLost(1500);
 		raid.getDeaths().add(unnamed);
 		board = ChambersPurples.of(Arrays.asList(raid));
-		Assert.assertEquals("", board.deaths.get(0).room);
-		Assert.assertEquals(1500, board.deaths.get(0).pointsLost);
+		Assert.assertEquals(16500, board.pointsLost);
+		Assert.assertEquals(2, board.rooms.size());
 	}
 
 	private static ChambersTimes.Row row(ChambersTimes.Table table, String label) {

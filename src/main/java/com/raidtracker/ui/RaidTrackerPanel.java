@@ -665,7 +665,7 @@ public class RaidTrackerPanel extends PluginPanel {
 		} else if ("best".equals(field)) {
 			bestFocus = value;
 		} else if ("target".equals(field)) {
-			targetSide = "Last".equals(value) ? "Last" : "This";
+			targetSide = "Last".equals(value) || "Avg".equals(value) ? value : "This";
 		} else if ("targetCount".equals(field)) {
 			targetCount = targetCount(value);
 			targetSide = "Last";
@@ -705,7 +705,7 @@ public class RaidTrackerPanel extends PluginPanel {
 			&& timesView != null;
 	}
 
-	/** Average, and Target's This, follow the raid in progress. Last N does not. */
+	/** Average, and Target's This, follow the raid in progress. Last N and Avg vs Trg do not. */
 	private boolean liveTargetOpen() {
 		if ("Average".equals(timesFocus)) {
 			return true;
@@ -2010,6 +2010,14 @@ public class RaidTrackerPanel extends PluginPanel {
 
         return b;
     }
+
+	/** Redraw the open page from the raids already read. Does nothing before the first load. */
+	public void redraw() {
+		if (!loaded) {
+			return;
+		}
+		updateView();
+	}
 
     public void loadRTList() {
         //TODO: support for a custom file so that it can be added to onedrive for example.

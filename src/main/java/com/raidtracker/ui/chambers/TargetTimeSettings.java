@@ -31,6 +31,10 @@ public final class TargetTimeSettings implements AWTEventListener {
 	private static final String TOTAL = "raidtracker-target-total";
 	private static final String NO_RIGHT = "raidtracker-target-noright";
 	private static final Color INK = new Color(150, 150, 150);
+	/** Same cuts as Times: under 10 behind is orange, further behind is red. */
+	private static final Color ORANGE = new Color(255, 176, 46);
+	private static final Color RED = new Color(255, 90, 90);
+	private static final String ROOM = "raidtracker-target-room";
 	private static final String[] BOXES = {
 		"cmTekton",
 		"cmCrabs",
@@ -145,8 +149,11 @@ public final class TargetTimeSettings implements AWTEventListener {
 		}
 		if (component instanceof JTextComponent) {
 			JLabel label = rowLabel(component);
-			if (label != null && "Target total".equals(plain(label.getText())) && onPluginSettings(component)) {
-				applyTotal((JTextComponent) component);
+			if (label != null && onPluginSettings(component)) {
+				if ("Target total".equals(roomName(label))) {
+					applyTotal((JTextComponent) component);
+				}
+				applyAdd(label);
 			}
 		}
 		if (component instanceof Container) {
@@ -157,7 +164,10 @@ public final class TargetTimeSettings implements AWTEventListener {
 	}
 
 	private void installReset(JComponent body) {
-		if (Boolean.TRUE.equals(body.getClientProperty(MARK)) || !hasLabel(body, "Tekton")) {
+		// Times also has a Tekton row. The button belongs on the settings section, which has Target total too.
+		if (Boolean.TRUE.equals(body.getClientProperty(MARK))
+			|| !hasLabel(body, "Tekton")
+			|| !hasLabel(body, "Target total")) {
 			return;
 		}
 		body.putClientProperty(MARK, Boolean.TRUE);
@@ -206,7 +216,7 @@ public final class TargetTimeSettings implements AWTEventListener {
 			JTextComponent field = (JTextComponent) component;
 			JLabel label = rowLabel(field);
 			if (label != null && onPluginSettings(field)) {
-				String name = plain(label.getText());
+				String name = roomName(label);
 				if ("Target total".equals(name)) {
 					applyTotal(field);
 				} else if (rewriteFields && !field.isFocusOwner()) {
@@ -215,6 +225,7 @@ public final class TargetTimeSettings implements AWTEventListener {
 						field.setText(shown);
 					}
 				}
+				applyAdd(label);
 			}
 		}
 		if (component instanceof Container && !isWide(component)) {
@@ -305,7 +316,7 @@ public final class TargetTimeSettings implements AWTEventListener {
 		if (isWide(component)) {
 			return false;
 		}
-		if (component instanceof JLabel && text.equals(plain(((JLabel) component).getText()))) {
+		if (component instanceof JLabel && names((JLabel) component, text)) {
 			return true;
 		}
 		if (!(component instanceof Container)) {
@@ -359,6 +370,47 @@ public final class TargetTimeSettings implements AWTEventListener {
 
 	private static boolean isWide(Component component) {
 		return component instanceof Container && ((Container) component).getComponentCount() > MAX_CHILDREN;
+	}
+
+	/** The saved box stays as typed. The label shows the extra time from the toggles. */
+	private void applyAdd(JLabel label) {
+		String name = roomName(label);
+		int extra = ChambersTargets.addSeconds(config, name);
+		if (extra <= 0) {
+			label.setText(name);
+			label.setForeground(Color.WHITE);
+			return;
+		}
+		String note = "+ " + ChambersFacts.formatTime(extra);
+		Color color = extra < 10 ? ORANGE : RED;
+		label.setText("<html>" + name + " <font color=\"#" + hex(color) + "\">" + note + "</font></html>");
+		label.setForeground(Color.WHITE);
+	}
+
+	/** The colored plus replaces the label text. The stored name is what the section check still matches. */
+	private static boolean names(JLabel label, String text) {
+		if (text.equals(plain(label.getText()))) {
+			return true;
+		}
+		return text.equals(label.getClientProperty(ROOM));
+	}
+
+	private static String roomName(JLabel label) {
+		Object kept = label.getClientProperty(ROOM);
+		if (kept instanceof String) {
+			return (String) kept;
+		}
+		String name = plain(label.getText());
+		int extra = name.indexOf(" + ");
+		if (extra >= 0) {
+			name = name.substring(0, extra);
+		}
+		label.putClientProperty(ROOM, name);
+		return name;
+	}
+
+	private static String hex(Color color) {
+		return String.format("%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
 	}
 
 	private static String plain(String text) {

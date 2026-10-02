@@ -4,16 +4,20 @@ import com.google.gson.Gson;
 import com.google.gson.JsonParser;
 import com.google.inject.Guice;
 import com.google.inject.Inject;
+import com.raidtracker.chambers.ChambersSession;
 import com.raidtracker.filereadwriter.FileReadWriter;
 import com.raidtracker.ui.RaidTrackerPanel;
 import junit.framework.TestCase;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
+import net.runelite.api.GameState;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.Player;
+import net.runelite.api.Varbits;
 import net.runelite.api.WorldType;
 import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.VarbitChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.plugins.PluginManager;
@@ -613,16 +617,16 @@ public class RaidTrackerTest extends TestCase
 		raidTracker.setInRaidChambers(true);
 		raidTracker.setTeamSize(1);
 
-		raidTrackerPlugin.olmPhaseStarted(450);
-		raidTrackerPlugin.mageHandDown(500);
-		raidTrackerPlugin.meleeHandDown(560);
-		raidTrackerPlugin.olmPhaseStarted(570);
-		raidTrackerPlugin.mageHandDown(620);
-		raidTrackerPlugin.meleeHandDown(700);
-		raidTrackerPlugin.olmPhaseStarted(710);
-		raidTrackerPlugin.mageHandDown(760);
-		raidTrackerPlugin.meleeHandDown(800);
-		raidTrackerPlugin.stampOlmHead(900);
+		raidTrackerPlugin.chambers().olmPhaseStarted(450);
+		raidTrackerPlugin.chambers().mageHandDown(500);
+		raidTrackerPlugin.chambers().meleeHandDown(560);
+		raidTrackerPlugin.chambers().olmPhaseStarted(570);
+		raidTrackerPlugin.chambers().mageHandDown(620);
+		raidTrackerPlugin.chambers().meleeHandDown(700);
+		raidTrackerPlugin.chambers().olmPhaseStarted(710);
+		raidTrackerPlugin.chambers().mageHandDown(760);
+		raidTrackerPlugin.chambers().meleeHandDown(800);
+		raidTrackerPlugin.chambers().stampOlmHead(900);
 
 		assertEquals(2, raidTracker.getOlmMageHandTimes().size());
 		assertEquals(30, raidTracker.getOlmMageHandTimes().get(0).intValue());
@@ -645,7 +649,7 @@ public class RaidTrackerTest extends TestCase
 		RaidTracker raidTracker = raidTrackerPlugin.getRaidTracker();
 		raidTracker.setInRaidChambers(true);
 
-		raidTrackerPlugin.notePersonalPoints(40000);
+		raidTrackerPlugin.chambers().notePersonalPoints(40000);
 		ChatMessage message = new ChatMessage(
 			null,
 			ChatMessageType.GAMEMESSAGE,
@@ -654,33 +658,33 @@ public class RaidTrackerTest extends TestCase
 			"",
 			0);
 		raidTrackerPlugin.checkChatMessage(message, raidTracker);
-		raidTrackerPlugin.notePersonalPoints(32000);
+		raidTrackerPlugin.chambers().notePersonalPoints(32000);
 
 		assertEquals(1, raidTracker.getDeaths().size());
 		assertEquals("Tekton", raidTracker.getDeaths().get(0).getRoom());
-		assertEquals(8000, raidTracker.getDeaths().get(0).getPointsLost());
+		assertEquals(16000, raidTracker.getDeaths().get(0).getPointsLost());
 		assertEquals(0, raidTracker.getPersonalDeathCount());
 
 		message.setMessage("Combat room 'Tekton' complete! Duration: 1:08");
 		raidTrackerPlugin.checkChatMessage(message, raidTracker);
 		message.setMessage("Oh dear, you are dead!");
 		raidTrackerPlugin.checkChatMessage(message, raidTracker);
-		raidTrackerPlugin.notePersonalPoints(25000);
+		raidTrackerPlugin.chambers().notePersonalPoints(25000);
 
 		assertEquals("Crabs", raidTracker.getDeaths().get(1).getRoom());
-		assertEquals(7000, raidTracker.getDeaths().get(1).getPointsLost());
+		assertEquals(12800, raidTracker.getDeaths().get(1).getPointsLost());
 
 		raidTracker.setChallengeMode(true);
-		raidTrackerPlugin.settleChambersDeathRooms(raidTracker);
+		raidTrackerPlugin.chambers().settleChambersDeathRooms(raidTracker);
 		assertEquals("Tekton", raidTracker.getDeaths().get(0).getRoom());
 		assertEquals("Crabs", raidTracker.getDeaths().get(1).getRoom());
 
 		raidTracker.setChallengeMode(false);
-		raidTrackerPlugin.settleChambersDeathRooms(raidTracker);
+		raidTrackerPlugin.chambers().settleChambersDeathRooms(raidTracker);
 		assertNull(raidTracker.getDeaths().get(0).getRoom());
 		assertNull(raidTracker.getDeaths().get(1).getRoom());
-		assertEquals(8000, raidTracker.getDeaths().get(0).getPointsLost());
-		assertEquals(7000, raidTracker.getDeaths().get(1).getPointsLost());
+		assertEquals(16000, raidTracker.getDeaths().get(0).getPointsLost());
+		assertEquals(12800, raidTracker.getDeaths().get(1).getPointsLost());
 		assertEquals(0, raidTracker.getPersonalDeathCount());
 
 		Gson gson = new Gson();
@@ -688,8 +692,95 @@ public class RaidTrackerTest extends TestCase
 		writer.setGson(gson);
 		String json = writer.getJSONString(raidTracker, gson, new JsonParser());
 		assertFalse(json.contains("\"room\""));
-		assertTrue(json.contains("\"pointsLost\":8000"));
+		assertTrue(json.contains("\"pointsLost\":16000"));
 		assertFalse(json.contains("\"personalDeathCount\""));
+	}
+
+	@Test
+	public void TestPointsDropRecordsADeathWithoutTheChatLine()
+	{
+		RaidTracker raidTracker = raidTrackerPlugin.getRaidTracker();
+		raidTracker.setInRaidChambers(true);
+
+		raidTrackerPlugin.chambers().notePersonalPoints(48330);
+		raidTrackerPlugin.chambers().notePersonalPoints(30000);
+
+		assertEquals(1, raidTracker.getDeaths().size());
+		assertEquals("Tekton", raidTracker.getDeaths().get(0).getRoom());
+		assertEquals(18330, raidTracker.getDeaths().get(0).getPointsLost());
+		assertEquals(0, raidTracker.getPersonalDeathCount());
+	}
+
+	@Test
+	public void TestPointsDropAfterTheOldWatchStillCounts()
+	{
+		RaidTracker raidTracker = raidTrackerPlugin.getRaidTracker();
+		raidTracker.setInRaidChambers(true);
+		raidTrackerPlugin.chambers().notePersonalPoints(50000);
+
+		ChatMessage message = new ChatMessage(
+			null,
+			ChatMessageType.GAMEMESSAGE,
+			"",
+			"Oh dear, you are dead!",
+			"",
+			0);
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+		for (int i = 0; i < 8; i++)
+		{
+			raidTrackerPlugin.chambers().notePersonalPoints(50000);
+		}
+		raidTrackerPlugin.chambers().notePersonalPoints(41000);
+
+		assertEquals(1, raidTracker.getDeaths().size());
+		assertEquals(20000, raidTracker.getDeaths().get(0).getPointsLost());
+	}
+
+	@Test
+	public void TestDeathCountAndChatAreOneDeath()
+	{
+		RaidTracker raidTracker = raidTrackerPlugin.getRaidTracker();
+		raidTracker.setInRaidChambers(true);
+		raidTrackerPlugin.chambers().notePersonalPoints(48000);
+		raidTrackerPlugin.chambers().noteRaidDeaths(1);
+
+		ChatMessage message = new ChatMessage(
+			null,
+			ChatMessageType.GAMEMESSAGE,
+			"",
+			"Oh dear, you are dead!",
+			"",
+			0);
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+		raidTrackerPlugin.chambers().notePersonalPoints(36000);
+
+		assertEquals(1, raidTracker.getDeaths().size());
+		assertEquals(19200, raidTracker.getDeaths().get(0).getPointsLost());
+	}
+
+	@Test
+	public void TestDeathRoomFollowsTheFixedLayout()
+	{
+		RaidTracker raidTracker = raidTrackerPlugin.getRaidTracker();
+		raidTracker.setInRaidChambers(true);
+		raidTracker.setChallengeMode(true);
+		raidTrackerPlugin.chambers().notePersonalPoints(40000);
+
+		ChatMessage message = new ChatMessage(
+			null,
+			ChatMessageType.GAMEMESSAGE,
+			"",
+			"Combat room 'Crabs' complete! Duration: 1:08",
+			"",
+			0);
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+		message.setMessage("Oh dear, you are dead!");
+		raidTrackerPlugin.checkChatMessage(message, raidTracker);
+		raidTrackerPlugin.chambers().notePersonalPoints(33000);
+		raidTrackerPlugin.chambers().settleChambersDeathRooms(raidTracker);
+
+		assertEquals("Ice demon", raidTracker.getDeaths().get(0).getRoom());
+		assertEquals(16000, raidTracker.getDeaths().get(0).getPointsLost());
 	}
 
 	@Test
@@ -888,6 +979,100 @@ public class RaidTrackerTest extends TestCase
 		when(unknownClient.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
 		assertNull(WorldUtils.playerOnLeagueWorld(unknownClient));
 		assertFalse(WorldUtils.playerOnUntrackedWorld(unknownClient));
+	}
+
+	@Test
+	public void TestLeavingUnfinishedChambersStartsTheNextRaid()
+	{
+		when(client.getGameState()).thenReturn(GameState.LOGGED_IN);
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
+		when(client.getVarbitValue(Varbits.IN_RAID)).thenReturn(1);
+		raidTrackerPlugin.setPanel(mock(RaidTrackerPanel.class));
+		FileReadWriter fw = mock(FileReadWriter.class);
+		raidTrackerPlugin.setFw(fw);
+
+		RaidTracker raid = raidTrackerPlugin.getRaidTracker();
+		raid.setLoggedIn(true);
+		raidTrackerPlugin.onVarbitChanged(varbit(Varbits.IN_RAID, 1));
+
+		raid = raidTrackerPlugin.getRaidTracker();
+		assertTrue(raid.isInRaidChambers());
+		assertTrue(raidTrackerPlugin.chambers().isLive());
+		raid.setTektonTime(90);
+
+		when(client.getVarbitValue(Varbits.IN_RAID)).thenReturn(0);
+		raidTrackerPlugin.onVarbitChanged(varbit(Varbits.IN_RAID, 0));
+
+		RaidTracker dropped = raidTrackerPlugin.getRaidTracker();
+		assertNotSame(raid, dropped);
+		assertFalse(dropped.isInRaidChambers());
+		assertTrue(dropped.isLoggedIn());
+		assertEquals(-1, dropped.getTektonTime());
+		assertFalse(raidTrackerPlugin.chambers().isTracking());
+		assertFalse(raidTrackerPlugin.chambers().isLive());
+		verify(fw, never()).writeToFile(any());
+
+		when(client.getVarbitValue(Varbits.IN_RAID)).thenReturn(1);
+		raidTrackerPlugin.onVarbitChanged(varbit(Varbits.IN_RAID, 1));
+
+		assertSame(dropped, raidTrackerPlugin.getRaidTracker());
+		assertTrue(dropped.isInRaidChambers());
+		assertTrue(raidTrackerPlugin.chambers().isLive());
+		assertEquals(-1, dropped.getTektonTime());
+	}
+
+	@Test
+	public void TestChambersDeathStaysInTheRaid()
+	{
+		when(client.getGameState()).thenReturn(GameState.LOGGED_IN);
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
+		when(client.getVarbitValue(Varbits.IN_RAID)).thenReturn(1);
+		raidTrackerPlugin.setPanel(mock(RaidTrackerPanel.class));
+
+		RaidTracker raid = raidTrackerPlugin.getRaidTracker();
+		raid.setLoggedIn(true);
+		raidTrackerPlugin.onVarbitChanged(varbit(Varbits.IN_RAID, 1));
+		raid = raidTrackerPlugin.getRaidTracker();
+		raid.setTektonTime(90);
+
+		raidTrackerPlugin.onVarbitChanged(varbit(ChambersSession.RAID_DEATH_COUNT, 1));
+
+		assertSame(raid, raidTrackerPlugin.getRaidTracker());
+		assertTrue(raid.isInRaidChambers());
+		assertEquals(90, raid.getTektonTime());
+		assertEquals(1, raid.getDeaths().size());
+	}
+
+	@Test
+	public void TestCompletedChambersStillWritesOnLeave()
+	{
+		when(client.getGameState()).thenReturn(GameState.LOGGED_IN);
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
+		when(client.getVarbitValue(Varbits.IN_RAID)).thenReturn(1);
+		raidTrackerPlugin.setPanel(mock(RaidTrackerPanel.class));
+		FileReadWriter fw = mock(FileReadWriter.class);
+		raidTrackerPlugin.setFw(fw);
+
+		RaidTracker raid = raidTrackerPlugin.getRaidTracker();
+		raid.setLoggedIn(true);
+		raidTrackerPlugin.onVarbitChanged(varbit(Varbits.IN_RAID, 1));
+		raid = raidTrackerPlugin.getRaidTracker();
+		raid.setTektonTime(90);
+		raid.setRaidComplete(true);
+
+		when(client.getVarbitValue(Varbits.IN_RAID)).thenReturn(0);
+		raidTrackerPlugin.onVarbitChanged(varbit(Varbits.IN_RAID, 0));
+
+		verify(fw).writeToFile(raid);
+		assertEquals(90, raid.getTektonTime());
+	}
+
+	private static VarbitChanged varbit(int id, int value)
+	{
+		VarbitChanged event = new VarbitChanged();
+		event.setVarbitId(id);
+		event.setValue(value);
+		return event;
 	}
 
 }

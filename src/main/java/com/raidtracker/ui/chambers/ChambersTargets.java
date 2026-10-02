@@ -35,6 +35,18 @@ public final class ChambersTargets {
 		return thisRaid(raids, live, openSeconds, config, mode, size);
 	}
 
+	/**
+	 * Every raid in the list, averaged, against the one target sheet.
+	 * The time is that average. The diff is how far it sits from the target. Positive is slower.
+	 */
+	public static ChambersTimes.Table averageVersusTarget(List<RaidTracker> saved, RaidTrackerConfig config) {
+		List<RaidTracker> raids = saved == null ? new ArrayList<RaidTracker>() : saved;
+		if (raids.isEmpty()) {
+			return emptyTarget("No completed raids in this filter yet.");
+		}
+		return againstSheet(raids, config);
+	}
+
 	/** The gray settings total. It always uses a 3-phase Olm. */
 	public static String settingsTotal(RaidTrackerConfig config) {
 		Integer raid = targets(config, null).get("raid");
@@ -42,6 +54,65 @@ public final class ChambersTargets {
 			return "";
 		}
 		return ChambersFacts.formatTime(raid);
+	}
+
+	/**
+	 * Extra seconds a toggle adds on top of a saved room, or on top of the plain target total.
+	 * Zero when that row has no target, or the toggles add nothing.
+	 */
+	public static int addSeconds(RaidTrackerConfig config, String label) {
+		if (config == null || label == null) {
+			return 0;
+		}
+		if ("Target total".equals(label)) {
+			return totalAddSeconds(config);
+		}
+		String key = sheetKey(label);
+		if (key == null) {
+			return 0;
+		}
+		Map<String, Integer> styled = typed(config);
+		Integer typed = styled.get(key);
+		if (typed == null || typed <= 0) {
+			return 0;
+		}
+		applyStyle(styled, config);
+		Integer next = styled.get(key);
+		if (next == null || next <= typed) {
+			return 0;
+		}
+		return next - typed;
+	}
+
+	/**
+	 * Extra time a toggle adds on top of the saved room box.
+	 * Blank when the room has no target, or the toggles add nothing.
+	 * The box itself stays the saved time.
+	 */
+	public static String addNote(RaidTrackerConfig config, String label) {
+		int extra = addSeconds(config, label);
+		if (extra <= 0) {
+			return "";
+		}
+		return "+ " + ChambersFacts.formatTime(extra);
+	}
+
+	private static int totalAddSeconds(RaidTrackerConfig config) {
+		Integer base = raidSeconds(config, false);
+		Integer styled = raidSeconds(config, true);
+		if (base == null || styled == null || styled <= base) {
+			return 0;
+		}
+		return styled - base;
+	}
+
+	private static Integer raidSeconds(RaidTrackerConfig config, boolean styled) {
+		Map<String, Integer> sheet = typed(config);
+		if (styled) {
+			applyStyle(sheet, config);
+		}
+		derivePreOlm(sheet);
+		return expandOlm(sheet, null).get("raid");
 	}
 
 	/** The text a target box should show. Target total is calculated. */
@@ -113,6 +184,28 @@ public final class ChambersTargets {
 		return value == null ? "" : value;
 	}
 
+	private static String sheetKey(String label) {
+		if ("Olm mage hand".equals(label)) {
+			return "mage";
+		}
+		if ("Olm phase".equals(label)) {
+			return "phase";
+		}
+		if ("Olm head".equals(label)) {
+			return "head";
+		}
+		if ("Between room time".equals(label)) {
+			return "between";
+		}
+		if ("Tekton".equals(label) || "Crabs".equals(label) || "Ice demon".equals(label)
+			|| "Shamans".equals(label) || "Vanguards".equals(label) || "Thieving".equals(label)
+			|| "Vespula".equals(label) || "Tightrope".equals(label) || "Guardians".equals(label)
+			|| "Vasa".equals(label) || "Mystics".equals(label) || "Muttadiles".equals(label)) {
+			return label;
+		}
+		return null;
+	}
+
 	private static ChambersTimes.Table thisRaid(
 		List<RaidTracker> raids,
 		RaidTracker live,
@@ -154,17 +247,23 @@ public final class ChambersTargets {
 
 	private static ChambersTimes.Table lastN(List<RaidTracker> raids, RaidTrackerConfig config, String mode, String size, int count) {
 		if (raids.isEmpty()) {
-			return new ChambersTimes.Table("No completed raids in this filter yet.", new ArrayList<ChambersTimes.Row>(), new ArrayList<ChambersTimes.Mark>(), null, true, "target");
+			return emptyTarget("No completed raids in this filter yet.");
 		}
 		int window = Math.max(1, Math.min(100, count));
 		List<RaidTracker> slice = raids.size() <= window ? raids : raids.subList(raids.size() - window, raids.size());
+		return againstSheet(slice, config);
+	}
+
+	/** Average of these raids on the target sheet. A room with no valid time is left out. */
+	private static ChambersTimes.Table againstSheet(List<RaidTracker> slice, RaidTrackerConfig config) {
 		Map<String, Integer> targets = targets(config, slice);
 		List<String> keys = ChambersTimes.keysFor(slice, null);
 		List<ChambersTimes.Row> rows = new ArrayList<>();
 		Map<String, Integer> actual = new LinkedHashMap<>();
+		boolean includeIceMilking = config != null && config.iceMilking();
 		for (int i = 0; i < keys.size(); i++) {
 			String key = keys.get(i);
-			Integer shown = averageOf(slice, key, config != null && config.iceMilking());
+			Integer shown = averageOf(slice, key, includeIceMilking);
 			if (shown == null) {
 				continue;
 			}
@@ -172,10 +271,14 @@ public final class ChambersTargets {
 			rows.add(row(key, shown, targets.get(key), false));
 		}
 		if (rows.isEmpty()) {
-			return new ChambersTimes.Table("No room times in this filter yet.", rows, new ArrayList<ChambersTimes.Mark>(), null, true, "target");
+			return emptyTarget("No room times in this filter yet.");
 		}
 		List<ChambersTimes.Mark> pace = pace(keys, actual, targets, actual.containsKey("raid"));
 		return new ChambersTimes.Table("", rows, pace, null, true, "target");
+	}
+
+	private static ChambersTimes.Table emptyTarget(String caption) {
+		return new ChambersTimes.Table(caption, new ArrayList<ChambersTimes.Row>(), new ArrayList<ChambersTimes.Mark>(), null, true, "target");
 	}
 
 	static Map<String, Integer> targets(RaidTrackerConfig config, List<RaidTracker> raids) {
@@ -257,7 +360,7 @@ public final class ChambersTargets {
 			shift(sheet, "Vespula", 18);
 		}
 		if (config.overThieve()) {
-			shift(sheet, "Thieving", 7);
+			shift(sheet, "Thieving", 4);
 		}
 		if (config.sippingPools()) {
 			shift(sheet, "between", 12);

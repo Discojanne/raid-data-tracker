@@ -70,8 +70,8 @@ public class ChambersPurpleView extends JPanel {
 		add(new HistoryStrip(board));
 		add(header("Deaths", null));
 		add(deaths(board));
-		if (!board.deaths.isEmpty()) {
-			add(deathRows(board));
+		if (!board.rooms.isEmpty()) {
+			add(deathRooms(board));
 		}
 		if (!board.tracked.isEmpty()) {
 			add(header("Tracked items", null));
@@ -136,32 +136,24 @@ public class ChambersPurpleView extends JPanel {
 		grid.add(stat("As purples", String.format(Locale.US, "%.2f", board.lostPurples()), Color.WHITE));
 		String raids = board.averagePoints > 0 ? String.format(Locale.US, "%.2f", board.lostRaids()) : "--";
 		grid.add(stat("As raids", raids, Color.WHITE));
-		String rate = board.raids > 0 ? String.format(Locale.US, "%.1f%%", board.deathRate() * 100.0) : "--";
-		grid.add(stat("Death rate", rate, Color.WHITE));
 		stretch(grid);
 		return grid;
 	}
 
-	private JPanel deathRows(ChambersPurples board) {
+	private JPanel deathRooms(ChambersPurples board) {
 		JPanel list = new JPanel();
 		list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
 		list.setOpaque(false);
-		for (int i = 0; i < board.deaths.size(); i++) {
-			ChambersPurples.Death death = board.deaths.get(i);
+		for (int i = 0; i < board.rooms.size(); i++) {
+			ChambersPurples.Room room = board.rooms.get(i);
 			JPanel row = new JPanel(new BorderLayout(10, 0));
 			row.setBackground(CARD);
 			row.setBorder(new CompoundBorder(
 				new MatteBorder(0, 0, 1, 0, HAIR),
 				new EmptyBorder(5, 8, 5, 8)
 			));
-			String kc = "--".equals(death.kc) ? "--" : (death.challengeMode ? "CM " : "KC ") + death.kc;
-			JLabel tag = text(kc, death.challengeMode ? GOLD : CYAN);
-			tag.setPreferredSize(new Dimension(72, 16));
-			JLabel room = text(death.room, Color.WHITE);
-			JLabel lost = text(grouped(death.pointsLost), Color.WHITE);
-			row.add(tag, BorderLayout.WEST);
-			row.add(room, BorderLayout.CENTER);
-			row.add(lost, BorderLayout.EAST);
+			row.add(text(room.name, Color.WHITE), BorderLayout.WEST);
+			row.add(text(Integer.toString(room.deaths), Color.WHITE), BorderLayout.EAST);
 			stretch(row);
 			list.add(row);
 		}
