@@ -8,6 +8,8 @@ import java.awt.Container;
 import java.awt.Toolkit;
 import java.awt.Window;
 import java.awt.event.AWTEventListener;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.awt.event.ContainerEvent;
 import java.awt.event.FocusListener;
 import java.awt.event.MouseListener;
@@ -21,7 +23,7 @@ import net.runelite.client.config.ConfigManager;
 
 /**
  * The settings page cannot calculate a total or reset a section on its own.
- * This fills the gray Target total and adds Reset to default on Target times.
+ * This fills the gray Target total and PPH, and adds Reset to default on Target times.
  */
 public final class TargetTimeSettings implements AWTEventListener {
 	private static final int MAX_CHILDREN = 64;
@@ -34,6 +36,8 @@ public final class TargetTimeSettings implements AWTEventListener {
 	/** Same cuts as Times: under 10 behind is orange, further behind is red. */
 	private static final Color ORANGE = new Color(255, 176, 46);
 	private static final Color RED = new Color(255, 90, 90);
+	private static final Color GREEN = new Color(80, 220, 120);
+	private static final String PAINT = "raidtracker-line-paint";
 	private static final String ROOM = "raidtracker-target-room";
 	private static final String[] BOXES = {
 		"cmTekton",
@@ -85,6 +89,8 @@ public final class TargetTimeSettings implements AWTEventListener {
 		busy = true;
 		try {
 			manager.unsetConfiguration(RaidTrackerConfig.CONFIG_GROUP, "cmSoloTotal");
+			manager.unsetConfiguration(RaidTrackerConfig.CONFIG_GROUP, "cmPointsLine");
+			manager.unsetConfiguration(RaidTrackerConfig.CONFIG_GROUP, "cmPph");
 		} finally {
 			busy = false;
 		}
@@ -150,8 +156,13 @@ public final class TargetTimeSettings implements AWTEventListener {
 		if (component instanceof JTextComponent) {
 			JLabel label = rowLabel(component);
 			if (label != null && onPluginSettings(component)) {
-				if ("Target total".equals(roomName(label))) {
-					applyTotal((JTextComponent) component);
+				String name = roomName(label);
+				if ("Target total".equals(name)) {
+					showTotal((JTextComponent) component);
+				} else if ("Total points".equals(name)) {
+					showPoints((JTextComponent) component);
+				} else if ("PPH".equals(name)) {
+					applyCalculated((JTextComponent) component, ChambersTargets.settingsPph(config));
 				}
 				applyAdd(label);
 			}
@@ -206,6 +217,7 @@ public final class TargetTimeSettings implements AWTEventListener {
 				manager.unsetConfiguration(RaidTrackerConfig.CONFIG_GROUP, BOXES[i]);
 			}
 			manager.unsetConfiguration(RaidTrackerConfig.CONFIG_GROUP, "cmSoloTotal");
+			manager.unsetConfiguration(RaidTrackerConfig.CONFIG_GROUP, "cmPointsLine");
 		} finally {
 			busy = false;
 		}
@@ -218,7 +230,11 @@ public final class TargetTimeSettings implements AWTEventListener {
 			if (label != null && onPluginSettings(field)) {
 				String name = roomName(label);
 				if ("Target total".equals(name)) {
-					applyTotal(field);
+					showTotal(field);
+				} else if ("Total points".equals(name)) {
+					showPoints(field);
+				} else if ("PPH".equals(name)) {
+					applyCalculated(field, ChambersTargets.settingsPph(config));
 				} else if (rewriteFields && !field.isFocusOwner()) {
 					String shown = ChambersTargets.shown(config, name);
 					if (!shown.isEmpty() || "Tekton".equals(name)) {
@@ -235,9 +251,9 @@ public final class TargetTimeSettings implements AWTEventListener {
 		}
 	}
 
-	private void applyTotal(JTextComponent field) {
+	private void applyCalculated(JTextComponent field, String value) {
 		field.setEnabled(true);
-		field.setText(ChambersTargets.settingsTotal(config));
+		field.setText(value);
 		field.setEditable(false);
 		field.setFocusable(false);
 		field.setForeground(INK);
@@ -246,6 +262,85 @@ public final class TargetTimeSettings implements AWTEventListener {
 			field.removeFocusListener(listener);
 		}
 		field.putClientProperty(TOTAL, Boolean.TRUE);
+	}
+
+	private void showTotal(JTextComponent field) {
+		String line = ChambersTargets.settingsTotalLine(config);
+		int extra = ChambersTargets.addSeconds(config, "Target total");
+		Color color = extra < 10 ? ORANGE : RED;
+		showLine(field, line, extra > 0 ? htmlDiff(line, color) : null);
+	}
+
+	private void showPoints(JTextComponent field) {
+		String line = ChambersTargets.settingsPointsLine(config);
+		int extra = ChambersTargets.addPoints(config, "Total Points");
+		showLine(field, line, extra > 0 ? htmlDiff(line, GREEN) : null);
+	}
+
+	/**
+	 * The box stays gray and cannot be edited. When a toggle adds something, only that added
+	 * amount is colored. The rest of the line stays the box color.
+	 */
+	private void showLine(JTextComponent field, String plain, String html) {
+		applyCalculated(field, plain == null ? "" : plain);
+		JLabel paint = (JLabel) field.getClientProperty(PAINT);
+		if (html == null) {
+			if (paint != null) {
+				paint.setVisible(false);
+			}
+			field.setForeground(INK);
+			field.setDisabledTextColor(INK);
+			return;
+		}
+		if (paint == null) {
+			paint = new JLabel();
+			paint.setOpaque(false);
+			paint.setHorizontalAlignment(javax.swing.SwingConstants.LEFT);
+			paint.setVerticalAlignment(javax.swing.SwingConstants.CENTER);
+			field.putClientProperty(PAINT, paint);
+			field.setLayout(null);
+			field.add(paint);
+			field.addComponentListener(new ComponentAdapter() {
+				@Override
+				public void componentResized(ComponentEvent event) {
+					placeLine(field);
+				}
+			});
+		}
+		paint.setFont(field.getFont());
+		paint.setForeground(INK);
+		paint.setText(html);
+		paint.setVisible(true);
+		Color paper = field.getBackground();
+		if (paper != null) {
+			field.setForeground(paper);
+			field.setDisabledTextColor(paper);
+		}
+		placeLine(field);
+	}
+
+	private static void placeLine(JTextComponent field) {
+		JLabel paint = (JLabel) field.getClientProperty(PAINT);
+		if (paint == null) {
+			return;
+		}
+		java.awt.Insets insets = field.getInsets();
+		int left = insets == null ? 0 : insets.left;
+		int top = insets == null ? 0 : insets.top;
+		int right = insets == null ? 0 : insets.right;
+		int bottom = insets == null ? 0 : insets.bottom;
+		paint.setBounds(left, top, Math.max(0, field.getWidth() - left - right), Math.max(0, field.getHeight() - top - bottom));
+	}
+
+	/** Colors only the added amount in a line such as {@code 26:53 (25:35 + 1:18)}. */
+	private static String htmlDiff(String line, Color color) {
+		int plus = line.lastIndexOf(" + ");
+		int close = line.lastIndexOf(')');
+		if (plus < 0 || close <= plus) {
+			return null;
+		}
+		String diff = line.substring(plus + 3, close);
+		return "<html>" + line.substring(0, plus + 3) + "<font color=\"#" + hex(color) + "\">" + diff + "</font>)</html>";
 	}
 
 	private void disarm(Component component) {
@@ -372,18 +467,27 @@ public final class TargetTimeSettings implements AWTEventListener {
 		return component instanceof Container && ((Container) component).getComponentCount() > MAX_CHILDREN;
 	}
 
-	/** The saved box stays as typed. The label shows the extra time from the toggles. */
+	/** The saved box stays as typed. The label shows the original time plus what the toggles add. */
 	private void applyAdd(JLabel label) {
 		String name = roomName(label);
+		if ("Target total".equals(name) || "Total points".equals(name) || "Total Points".equals(name) || "PPH".equals(name)) {
+			label.setText(name);
+			label.setForeground(Color.WHITE);
+			return;
+		}
 		int extra = ChambersTargets.addSeconds(config, name);
 		if (extra <= 0) {
 			label.setText(name);
 			label.setForeground(Color.WHITE);
 			return;
 		}
-		String note = "+ " + ChambersFacts.formatTime(extra);
+		String base = ChambersTargets.shown(config, name);
+		String diff = ChambersFacts.formatTime(extra);
 		Color color = extra < 10 ? ORANGE : RED;
-		label.setText("<html>" + name + " <font color=\"#" + hex(color) + "\">" + note + "</font></html>");
+		String note = base.isEmpty()
+			? "<font color=\"#" + hex(color) + "\">+ " + diff + "</font>"
+			: "(" + base + " + <font color=\"#" + hex(color) + "\">" + diff + "</font>)";
+		label.setText("<html>" + name + " " + note + "</html>");
 		label.setForeground(Color.WHITE);
 	}
 

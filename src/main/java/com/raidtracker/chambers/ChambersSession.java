@@ -47,6 +47,11 @@ public final class ChambersSession
 	/** Your deaths in the current Chambers raid. It climbs when you die, including after the kick outside. */
 	public static final int RAID_DEATH_COUNT = 10055;
 	private static final int FULL_LAYOUT_PREP_ROOMS = 11;
+	/**
+	 * A death this soon after the room-complete chat still belongs to that room.
+	 * The completion line can land first when you die as the room ends.
+	 */
+	private static final long DEATH_ROOM_GRACE_MILLIS = 5000L;
 	/** Challenge Mode order. A death is named as the room you were in, which is the next one after the last split. */
 	private static final String[] FIXED_ROOMS = {
 		"Tekton",
@@ -75,6 +80,9 @@ public final class ChambersSession
 	private int olmHeadStartUnits = -1;
 	private boolean olmFightStarted;
 	private String lastPrepRoom = "";
+	private long lastPrepFinishedAt;
+	/** Tests pin the wall clock used for the death-room grace. Null follows the real clock. */
+	private Long nowOverride;
 	private boolean pendingDeath;
 	private int pendingBaseline;
 	private int pendingMin;
@@ -166,7 +174,19 @@ public final class ChambersSession
 	/** Chambers-only. Death rooms use the prep room that just finished. */
 	public void prepRoomFinished(String room)
 	{
-		lastPrepRoom = room;
+		lastPrepRoom = room == null ? "" : room;
+		lastPrepFinishedAt = nowMillis();
+	}
+
+	/** Tests pin the wall clock so a death can land inside or outside the room grace. */
+	public void setNowMillis(Long millis)
+	{
+		nowOverride = millis;
+	}
+
+	private long nowMillis()
+	{
+		return nowOverride != null ? nowOverride.longValue() : System.currentTimeMillis();
 	}
 
 	/** Chambers side of the shared kill-count line. A regular count drops the study room. */
@@ -424,7 +444,11 @@ public final class ChambersSession
 		}
 		if (pendingDeath)
 		{
-			sawPointsSinceDeath = true;
+			// An unchanged sample is still this death. The next chat line is another death once the points change.
+			if (pointsNow != lastPersonalPoints)
+			{
+				sawPointsSinceDeath = true;
+			}
 			if (pointsLostNow() > 0 && pointsNow > pendingMin)
 			{
 				pendingDeath = false;
@@ -439,7 +463,7 @@ public final class ChambersSession
 
 	/**
 	 * Chambers death count from varbit {@code 10055}. One climb is one of your deaths.
-	 * The chat line and this count are the same death when both arrive before the points drop.
+	 * The chat line and this count are the same death until the personal points change.
 	 */
 	public void noteRaidDeaths(int count)
 	{
@@ -587,6 +611,7 @@ public final class ChambersSession
 
 	/**
 	 * Olm once a phase or the head has started.
+	 * A death under 5 seconds after a room finishes still belongs to that room.
 	 * Otherwise the next room in the fixed order. After Muttadiles, Olm has not started yet, so the room stays unset.
 	 */
 	private String chambersDeathRoom()
@@ -594,6 +619,10 @@ public final class ChambersSession
 		if (olmFightStarted || olmHeadStartUnits >= 0)
 		{
 			return "Olm";
+		}
+		if (deathStillInFinishedRoom())
+		{
+			return lastPrepRoom;
 		}
 		if (lastPrepRoom.isEmpty())
 		{
@@ -607,6 +636,16 @@ public final class ChambersSession
 			}
 		}
 		return null;
+	}
+
+	private boolean deathStillInFinishedRoom()
+	{
+		if (lastPrepRoom.isEmpty() || lastPrepFinishedAt <= 0)
+		{
+			return false;
+		}
+		long elapsed = nowMillis() - lastPrepFinishedAt;
+		return elapsed >= 0 && elapsed < DEATH_ROOM_GRACE_MILLIS;
 	}
 
 	public void settleChambersDeathRooms(RaidTracker raidTracker)
@@ -727,6 +766,7 @@ public final class ChambersSession
 		olmHeadStartUnits = -1;
 		olmFightStarted = false;
 		lastPrepRoom = "";
+		lastPrepFinishedAt = 0;
 		pendingDeath = false;
 		pendingBaseline = 0;
 		pendingMin = 0;
@@ -741,7 +781,16 @@ public final class ChambersSession
 	/** Refresh the Times page from the raid in memory. A closed sidebar and a steady clock do nothing. */
 	public void pushLiveChambers()
 	{
+		if (!chambersLive)
+		{
+			return;
+		}
+		int generation = panel.get().liveGeneration();
 		RaidTracker raidTracker = raid();
+		if (!chambersLive || raidTracker == null || !raidTracker.isInRaidChambers() || generation != panel.get().liveGeneration())
+		{
+			return;
+		}
 		int open = openChambersSeconds();
 		int signature = open;
 		signature = 31 * signature + raidTracker.getRaidTime();
@@ -762,14 +811,19 @@ public final class ChambersSession
 		signature = 31 * signature + raidTracker.getMuttadilesTime();
 		signature = 31 * signature + listSignature(raidTracker.getOlmMageHandTimes());
 		signature = 31 * signature + listSignature(raidTracker.getOlmPhaseTimes());
+		signature = 31 * signature + ChambersFacts.deathSignature(raidTracker);
 		if (signature == lastLiveSignature)
+		{
+			return;
+		}
+		if (!chambersLive || generation != panel.get().liveGeneration())
 		{
 			return;
 		}
 		lastLiveSignature = signature;
 		RaidTracker snap = ChambersFacts.copyTimes(raidTracker);
 		int shown = open;
-		SwingUtilities.invokeLater(() -> panel.get().showLiveChambers(snap, shown));
+		SwingUtilities.invokeLater(() -> panel.get().showLiveChambers(snap, shown, generation));
 	}
 
 	private int openChambersSeconds()

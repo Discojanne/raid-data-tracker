@@ -5,7 +5,10 @@ import com.raidtracker.ui.chambers.ChambersFilter;
 import com.raidtracker.ui.chambers.ChambersPurples;
 import com.raidtracker.ui.chambers.ChambersTargets;
 import com.raidtracker.ui.chambers.ChambersTimes;
+import com.raidtracker.ui.chambers.ChambersTimesView;
 import com.raidtracker.ui.chambers.TargetTimeSettings;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -38,6 +41,53 @@ public class ChambersViewTest {
 		raid.setRaidTime(340);
 		Assert.assertEquals(140, ChambersFacts.olmSeconds(raid));
 		Assert.assertEquals(100, ChambersFacts.betweenSeconds(raid));
+	}
+
+	@Test
+	public void betweenRoomsIsReadyWhenTheLowerFloorCompletes() {
+		RaidTracker raid = raid();
+		raid.setTektonTime(60);
+		raid.setMuttadilesTime(40);
+		raid.setLowerTime(200);
+		Assert.assertEquals(100, ChambersFacts.betweenSeconds(raid));
+		raid.setRaidTime(340);
+		Assert.assertEquals(100, ChambersFacts.betweenSeconds(raid));
+		raid.setRaidTime(150);
+		Assert.assertEquals(-1, ChambersFacts.betweenSeconds(raid));
+	}
+
+	@Test
+	public void aDeathMarksThatRoomOnOneRaidAndNotOnBestSplits() {
+		RaidTracker raid = raid();
+		raid.setChallengeMode(true);
+		raid.setTeamSize(1);
+		raid.setTektonTime(80);
+		raid.setLowerTime(200);
+		raid.setRaidTime(400);
+		raid.setPersonalPoints(30000);
+		ChambersDeath death = new ChambersDeath();
+		death.setRoom("Tekton");
+		death.setPointsLost(1000);
+		raid.setDeaths(new ArrayList<>());
+		raid.getDeaths().add(death);
+		ChambersTimes.Table average = ChambersTimes.average(Arrays.asList(raid), null, -1);
+		Assert.assertTrue(row(average, "Tekton").died);
+		Assert.assertFalse(row(average, "Raid time").died);
+		ChambersTimes.Table fastest = ChambersTimes.bestRaid(Arrays.asList(raid));
+		Assert.assertTrue(row(fastest, "Tekton").died);
+		ChambersTimes.Table splits = ChambersTimes.bestSplits(Arrays.asList(raid));
+		Assert.assertFalse(row(splits, "Tekton").died);
+		RaidTrackerConfig config = new RaidTrackerConfig() {};
+		ChambersTimes.Table target = ChambersTargets.compare(
+			Arrays.asList(raid), null, -1, config, ChambersFilter.ALL, ChambersFilter.ALL, false, 10);
+		Assert.assertTrue(row(target, "Tekton").died);
+		ChambersTimes.Table last = ChambersTargets.compare(
+			Arrays.asList(raid), null, -1, config, ChambersFilter.ALL, ChambersFilter.ALL, true, 10);
+		Assert.assertFalse(row(last, "Tekton").died);
+		RaidTracker copy = ChambersFacts.copyTimes(raid);
+		Assert.assertEquals("Tekton", copy.getDeaths().get(0).getRoom());
+		death.setRoom(null);
+		Assert.assertFalse(ChambersFacts.diedInRoom(raid, "Tekton"));
 	}
 
 	@Test
@@ -169,12 +219,54 @@ public class ChambersViewTest {
 		Assert.assertEquals(0, mark(table, "Tekton"));
 		Assert.assertNull(table.personalBestGap);
 		Assert.assertEquals("target", table.paceAgainst);
-		Assert.assertEquals("25:30", ChambersTargets.settingsTotal(config));
+		Assert.assertEquals("25:35", ChambersTargets.settingsTotal(config));
+		Assert.assertEquals("138685", ChambersTargets.settingsPph(config));
 
 		ChambersTimes.Table anyFilter = ChambersTargets.compare(Arrays.asList(raid), null, -1, config, ChambersFilter.ALL, ChambersFilter.ALL, false, 10);
 		Assert.assertEquals(Integer.valueOf(0), row(anyFilter, "Tekton").delta);
 		ChambersTimes.Table regular = ChambersTargets.compare(Arrays.asList(raid), null, -1, config, ChambersFilter.REGULAR_FULL, ChambersFilter.TEAM, false, 10);
 		Assert.assertEquals(Integer.valueOf(0), row(regular, "Raid time").delta);
+	}
+
+	@Test
+	public void targetGraphDrawsThePersonalBestFromTheComparison() {
+		RaidTrackerConfig config = new RaidTrackerConfig() {};
+		RaidTracker earlier = cmSoloOnTarget();
+		earlier.setRaidTime(1400);
+		RaidTracker latest = cmSoloOnTarget();
+		ChambersTimes.Table shown = ChambersTargets.compare(Arrays.asList(earlier, latest), null, -1, config, ChambersFilter.CM, ChambersFilter.SOLO, false, 10);
+		Assert.assertEquals(Integer.valueOf(1535 - 1400), shown.personalBestGap);
+		Assert.assertEquals(0, mark(shown, "Finish"));
+
+		ChambersTimes.Table live = ChambersTargets.compare(Arrays.asList(earlier), latest, 30, config, ChambersFilter.ALL, ChambersFilter.ALL, false, 10);
+		Assert.assertEquals(Integer.valueOf(1535 - 1400), live.personalBestGap);
+
+		ChambersTimes.Table last = ChambersTargets.compare(Arrays.asList(earlier, latest), null, -1, config, ChambersFilter.ALL, ChambersFilter.ALL, true, 10);
+		Assert.assertEquals(Integer.valueOf(1535 - 1400), last.personalBestGap);
+
+		ChambersTimes.Table average = ChambersTargets.averageVersusTarget(Arrays.asList(earlier, latest), config);
+		Assert.assertEquals(Integer.valueOf(1535 - 1400), average.personalBestGap);
+
+		RaidTracker tooShort = cmSoloOnTarget();
+		tooShort.setRaidTime(5);
+		ChambersTimes.Table ignored = ChambersTargets.compare(Arrays.asList(tooShort, latest), null, -1, config, ChambersFilter.CM, ChambersFilter.SOLO, false, 10);
+		Assert.assertNull(ignored.personalBestGap);
+
+		RaidTracker slower = cmSoloOnTarget();
+		slower.setRaidTime(1600);
+		ChambersTimes.Table behind = ChambersTargets.compare(Arrays.asList(slower, latest), null, -1, config, ChambersFilter.CM, ChambersFilter.SOLO, false, 10);
+		Assert.assertEquals(Integer.valueOf(1535 - 1600), behind.personalBestGap);
+	}
+
+	@Test
+	public void personalBestLineCanBeTurnedOff() {
+		Assert.assertEquals(Integer.valueOf(130), ChambersTimesView.paceGap(new RaidTrackerConfig() {}, 130));
+		Assert.assertNull(ChambersTimesView.paceGap(new RaidTrackerConfig() {
+			@Override
+			public boolean showPersonalBest() {
+				return false;
+			}
+		}, 130));
 	}
 
 	@Test
@@ -238,8 +330,71 @@ public class ChambersViewTest {
 				return false;
 			}
 		};
-		Assert.assertEquals("25:34", ChambersTargets.settingsTotal(crabOff));
+		Assert.assertEquals("25:39", ChambersTargets.settingsTotal(crabOff));
+		Assert.assertEquals("138325", ChambersTargets.settingsPph(crabOff));
 		Assert.assertEquals("+ 0:04", ChambersTargets.addNote(crabOff, "Target total"));
+	}
+
+	@Test
+	public void moneyRunPointsComeBackWhenThoseThreeAreOn() {
+		RaidTracker raid = raid();
+		raid.setTeamSize(1);
+		raid.setVespulaTime(59);
+		raid.setPersonalPoints(59134);
+		ChambersTimes.Table plain = ChambersTargets.compare(Arrays.asList(raid), null, -1, new RaidTrackerConfig() {}, ChambersFilter.ALL, ChambersFilter.SOLO, false, 10);
+		Assert.assertEquals(Integer.valueOf(0), row(plain, "Vespula").delta);
+		Assert.assertEquals(Integer.valueOf(0), row(plain, "Total points").delta);
+		Assert.assertEquals(0, ChambersTargets.addPoints(new RaidTrackerConfig() {}, "Total Points"));
+
+		RaidTrackerConfig milk = new RaidTrackerConfig() {
+			@Override
+			public boolean milkVespula() {
+				return true;
+			}
+		};
+		raid.setPersonalPoints(60134);
+		ChambersTimes.Table milked = ChambersTargets.compare(Arrays.asList(raid), null, -1, milk, ChambersFilter.ALL, ChambersFilter.SOLO, false, 10);
+		Assert.assertEquals(Integer.valueOf(59 - 74), row(milked, "Vespula").delta);
+		Assert.assertEquals(Integer.valueOf(0), row(milked, "Total points").delta);
+		Assert.assertEquals(1000, ChambersTargets.addPoints(milk, "Total Points"));
+
+		RaidTrackerConfig all = new RaidTrackerConfig() {
+			@Override
+			public boolean milkVespula() {
+				return true;
+			}
+
+			@Override
+			public boolean killRope() {
+				return true;
+			}
+
+			@Override
+			public boolean overThieve() {
+				return true;
+			}
+		};
+		raid.setPersonalPoints(64100);
+		ChambersTimes.Table checked = ChambersTargets.compare(Arrays.asList(raid), null, -1, all, ChambersFilter.ALL, ChambersFilter.SOLO, false, 10);
+		Assert.assertEquals(Integer.valueOf(0), row(checked, "Total points").delta);
+		Assert.assertEquals(4966, ChambersTargets.addPoints(all, "Total Points"));
+		Assert.assertEquals("26:53 (25:35 + 1:18)", ChambersTargets.settingsTotalLine(all));
+		Assert.assertEquals("64100 (59134 + 4966)", ChambersTargets.settingsPointsLine(all));
+		Assert.assertEquals("25:35", ChambersTargets.settingsTotalLine(new RaidTrackerConfig() {}));
+		Assert.assertEquals("59134", ChambersTargets.settingsPointsLine(new RaidTrackerConfig() {}));
+
+		RaidTrackerConfig blank = new RaidTrackerConfig() {
+			@Override
+			public boolean milkVespula() {
+				return true;
+			}
+
+			@Override
+			public String cmTotalPoints() {
+				return "";
+			}
+		};
+		Assert.assertEquals(0, ChambersTargets.addPoints(blank, "Total Points"));
 	}
 
 	@Test
@@ -333,6 +488,12 @@ public class ChambersViewTest {
 		total.setEditable(true);
 		totalRow.add(total);
 		body.add(totalRow);
+		JPanel pphRow = new JPanel();
+		pphRow.add(new JLabel("PPH"));
+		JTextArea pph = new JTextArea("130000");
+		pph.setEditable(true);
+		pphRow.add(pph);
+		body.add(pphRow);
 		JPanel tektonRow = new JPanel();
 		tektonRow.add(new JLabel("Tekton"));
 		tektonRow.add(new JTextArea("2:00"));
@@ -345,7 +506,9 @@ public class ChambersViewTest {
 		main.add(section);
 		settings.notice(section);
 		Assert.assertFalse(total.isEditable());
-		Assert.assertEquals("25:30", total.getText());
+		Assert.assertEquals("25:35", total.getText());
+		Assert.assertFalse(pph.isEditable());
+		Assert.assertEquals("138685", pph.getText());
 		Assert.assertTrue(body.getComponent(0) instanceof JButton);
 		Assert.assertEquals("Reset to default", ((JButton) body.getComponent(0)).getText());
 	}
@@ -487,6 +650,33 @@ public class ChambersViewTest {
 		Assert.assertEquals(2, board.rooms.size());
 	}
 
+	@Test
+	public void raidsTodayStartsAtFourInTheMorning() {
+		ZoneId zone = ZoneId.of("UTC");
+		RaidTracker beforeFour = raid();
+		beforeFour.setDate(utc(2026, 10, 8, 3, 59, zone));
+		RaidTracker atFour = raid();
+		atFour.setDate(utc(2026, 10, 8, 4, 0, zone));
+		RaidTracker lastNight = raid();
+		lastNight.setDate(utc(2026, 10, 7, 23, 0, zone));
+		RaidTracker previousMorning = raid();
+		previousMorning.setDate(utc(2026, 10, 7, 3, 30, zone));
+		List<RaidTracker> raids = Arrays.asList(beforeFour, atFour, lastNight, previousMorning);
+
+		long tenAm = utc(2026, 10, 8, 10, 0, zone);
+		Assert.assertEquals(1, ChambersFacts.raidsToday(raids, tenAm, zone));
+
+		long justBeforeFour = utc(2026, 10, 8, 3, 59, zone);
+		Assert.assertEquals(2, ChambersFacts.raidsToday(raids, justBeforeFour, zone));
+		Assert.assertEquals("1 raid today", ChambersFacts.raidsTodayLabel(1));
+		Assert.assertEquals("0 raids today", ChambersFacts.raidsTodayLabel(0));
+		Assert.assertEquals("4 raids today", ChambersFacts.raidsTodayLabel(4));
+	}
+
+	private static long utc(int year, int month, int day, int hour, int minute, ZoneId zone) {
+		return ZonedDateTime.of(year, month, day, hour, minute, 0, 0, zone).toInstant().toEpochMilli();
+	}
+
 	private static ChambersTimes.Row row(ChambersTimes.Table table, String label) {
 		ChambersTimes.Row found = rowOrNull(table, label);
 		if (found == null) {
@@ -598,14 +788,14 @@ public class ChambersViewTest {
 		raid.setShamansTime(63);
 		raid.setVanguardsTime(132);
 		raid.setThievingTime(75);
-		raid.setVespulaTime(57);
+		raid.setVespulaTime(59);
 		raid.setTightropeTime(47);
-		raid.setGuardiansTime(107);
+		raid.setGuardiansTime(110);
 		raid.setVasaTime(70);
 		raid.setMysticsTime(100);
 		raid.setMuttadilesTime(85);
-		raid.setLowerTime(1062);
-		raid.setRaidTime(1530);
+		raid.setLowerTime(1067);
+		raid.setRaidTime(1535);
 		ArrayList<Integer> hands = new ArrayList<>();
 		hands.add(56);
 		hands.add(56);

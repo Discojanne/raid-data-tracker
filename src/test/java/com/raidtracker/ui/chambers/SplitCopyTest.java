@@ -92,6 +92,16 @@ public class SplitCopyTest {
 		Assert.assertEquals("", ChambersTimesView.copyTitle("Average", null, "This", 10, ""));
 	}
 
+	@Test
+	public void aDeathSkullStaysOutOfThePaste() {
+		String plain = ChambersTimesView.discordSplits(Arrays.asList(
+			row("Tekton", "Rooms", "01:08", "-0:02", -2, false, false)
+		), "CM 1");
+		ChambersTimes.Row died = new ChambersTimes.Row("Tekton", "Rooms", 0, "01:08", "-0:02", -2, false, false, false, true);
+		String marked = ChambersTimesView.discordSplits(Arrays.asList(died), "CM 1");
+		Assert.assertEquals(plain, marked);
+	}
+
 	private static ChambersTimes.Row row(String label, String group, String value, String aside, Integer delta, boolean higher, boolean open) {
 		return new ChambersTimes.Row(label, group, 0, value, aside, delta, higher, open, false);
 	}

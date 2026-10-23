@@ -12,7 +12,6 @@ import java.awt.FontMetrics;
 import java.awt.Insets;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
-import java.awt.GridLayout;
 import java.awt.RenderingHints;
 import java.awt.Shape;
 import java.awt.Toolkit;
@@ -43,6 +42,8 @@ import net.runelite.client.ui.FontManager;
 
 /**
  * Average, target, and best Chambers times.
+ * Filter is a short tab on that strip. It opens the type and party-size dropdowns under the strip.
+ * The kill count sits on the right of the Rooms header.
  * A tick that only moves Current updates that label. The saved-raid comparison is rebuilt when a split changes.
  * Right-click the time table and choose Copy splits to put a Discord code block on the clipboard.
  */
@@ -59,11 +60,13 @@ public class ChambersTimesView extends JPanel {
 	private static final Font NAME = new Font(Font.SANS_SERIF, Font.PLAIN, 12);
 	private static final Font TIME = new Font(Font.SANS_SERIF, Font.BOLD, 13);
 	private static final int STRIP_HEIGHT = 22;
-	private static final int FILTER_HEIGHT = 20;
+	private static final int FILTER_HEIGHT = 24;
 	/** Extra pixels so a value that paints a hair wider than it measured is not clipped to "...". */
 	private static final int TEXT_PAD = 8;
 	private static final int COLUMN_GAP = 10;
 	private static final int NAME_GAP = 12;
+	private static final int SKULL = 13;
+	private static final int SKULL_GAP = 3;
 
 	private final List<RaidTracker> saved;
 	private final List<RaidTracker> all;
@@ -75,19 +78,23 @@ public class ChambersTimesView extends JPanel {
 	private final String best;
 	private final String targetSide;
 	private final int targetCount;
+	private final boolean filtersOpen;
 	private final JPanel rows = new JPanel();
 	private final JPopupMenu copyMenu = new JPopupMenu();
 	private List<ChambersTimes.Row> shownRows = new ArrayList<>();
 	private String copyHeading = "";
 	private final PaceLine pace = new PaceLine();
+	private final JLabel raidsTodayLabel = text("0 raids today", ColorScheme.LIGHT_GRAY_COLOR);
+	private final JPanel raidsTodayBar = new JPanel(new BorderLayout());
 	private final JLabel currentValue = new JLabel();
-	private final JLabel kcLabel = new JLabel();
 	private int liveSignature = Integer.MIN_VALUE;
 	private boolean currentShown;
 	private boolean watchingViewport;
 	/** Shared right-aligned widths so a wider diff cannot shove that row's time sideways. */
 	private int timeColumn;
 	private int diffColumn;
+	/** The raid-complete rebuild puts the splits back at the top of the sidebar. */
+	private boolean pinTop;
 
 	public ChambersTimesView(
 		List<RaidTracker> saved,
@@ -98,7 +105,8 @@ public class ChambersTimesView extends JPanel {
 		ChambersChoice choice,
 		RaidTrackerConfig config,
 		String targetSide,
-		int targetCount
+		int targetCount,
+		boolean filtersOpen
 	) {
 		this.all = saved == null ? java.util.Collections.<RaidTracker>emptyList() : saved;
 		this.saved = ChambersFilter.select(this.all, mode, size);
@@ -110,14 +118,17 @@ public class ChambersTimesView extends JPanel {
 		this.best = best;
 		this.targetSide = shownTargetSide(targetSide);
 		this.targetCount = Math.max(1, Math.min(100, targetCount));
+		this.filtersOpen = filtersOpen;
 		setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
 		// Match the title row's center alignment. A left-aligned page in that box only receives the right half.
 		setAlignmentX(CENTER_ALIGNMENT);
 		setBorder(new EmptyBorder(0, 0, 2, 0));
-		add(filters(mode, size));
-		add(Box.createRigidArea(new Dimension(0, 2)));
-		add(new ChoiceStrip(new String[] {"Average", "Target", "Best"}, focus, "focus"));
+		add(new ChoiceStrip(new String[] {"Average", "Target", "Best"}, focus, "focus", true));
+		if (filtersOpen) {
+			add(Box.createRigidArea(new Dimension(0, 2)));
+			add(filterPanel(mode, size));
+		}
 		if ("Best".equals(focus)) {
 			add(Box.createRigidArea(new Dimension(0, 2)));
 			add(new ChoiceStrip(new String[] {"Splits", "Raid time", "PPH"}, best, "best"));
@@ -137,6 +148,12 @@ public class ChambersTimesView extends JPanel {
 		add(Box.createRigidArea(new Dimension(0, 3)));
 		pace.setAlignmentX(LEFT_ALIGNMENT);
 		add(pace);
+		raidsTodayLabel.setHorizontalAlignment(SwingConstants.LEFT);
+		raidsTodayBar.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		raidsTodayBar.setBorder(new EmptyBorder(4, 6, 0, 6));
+		raidsTodayBar.add(raidsTodayLabel, BorderLayout.WEST);
+		stretch(raidsTodayBar);
+		add(raidsTodayBar);
 		showTable(tableFor(null, -1, focus, best));
 		addHierarchyListener(event -> {
 			if ((event.getChangeFlags() & (HierarchyEvent.SHOWING_CHANGED | HierarchyEvent.PARENT_CHANGED)) != 0) {
@@ -163,6 +180,7 @@ public class ChambersTimesView extends JPanel {
 		boolean wantCurrent = openSeconds > 0;
 		if (signature != liveSignature || wantCurrent != currentShown) {
 			liveSignature = signature;
+			pinTop = !wantCurrent;
 			showTable(tableFor(live, openSeconds, focus, null));
 			return;
 		}
@@ -197,6 +215,8 @@ public class ChambersTimesView extends JPanel {
 	}
 
 	private void showTable(ChambersTimes.Table table) {
+		boolean pin = pinTop;
+		pinTop = false;
 		rows.removeAll();
 		currentShown = false;
 		shownRows = new ArrayList<>(table.rows);
@@ -206,19 +226,23 @@ public class ChambersTimesView extends JPanel {
 		timeColumn = columns[0];
 		diffColumn = columns[1];
 		String group = "";
+		String badge = "";
 		if (isBadge(table.caption)) {
-			kcLabel.setText(table.caption);
-		} else {
-			kcLabel.setText("");
-			if (!table.caption.isEmpty() && !"Fastest in this filter".equals(table.caption)) {
-				rows.add(caption(table.caption));
-			}
+			badge = table.caption;
+		} else if (!table.caption.isEmpty() && !"Fastest in this filter".equals(table.caption)) {
+			rows.add(caption(table.caption));
 		}
+		boolean rooms = hasGroup(table.rows, "Rooms");
+		boolean slotPlaced = false;
 		for (int i = 0; i < table.rows.size(); i++) {
 			ChambersTimes.Row row = table.rows.get(i);
 			if (!row.group.equals(group) && !"Current".equals(row.group)) {
 				group = row.group;
-				rows.add(header(group));
+				boolean slot = !slotPlaced && (rooms ? "Rooms".equals(group) : true);
+				if (slot) {
+					slotPlaced = true;
+				}
+				rows.add(header(group, slot, badge));
 			}
 			rows.add(line(row));
 			if (!"Best".equals(focus) && ("Shamans".equals(row.label) || "Tightrope".equals(row.label))) {
@@ -227,7 +251,7 @@ public class ChambersTimesView extends JPanel {
 		}
 		stretch(rows);
 		if (table.graph && table.pace.size() >= 2) {
-			pace.show(table.pace, table.personalBestGap, table.paceAgainst);
+			pace.show(table.pace, paceGap(config, table.personalBestGap), table.paceAgainst);
 			pace.setVisible(true);
 		} else if (table.graph && !table.rows.isEmpty()) {
 			pace.showEmpty("target".equals(table.paceAgainst) ? "No target to plot yet." : "Need another raid in this filter.");
@@ -236,12 +260,45 @@ public class ChambersTimesView extends JPanel {
 			pace.showEmpty("");
 			pace.setVisible(false);
 		}
+		refreshRaidsToday();
 		rows.revalidate();
 		rows.repaint();
 		SwingUtilities.invokeLater(() -> {
+			stretch(rows);
+			revalidate();
 			refreshColumns();
 			fillGraph();
+			if (pin) {
+				scrollToTop();
+			}
 		});
+	}
+
+	/** Null hides the personal-best line and keeps that gap out of the graph scale. */
+	public static Integer paceGap(RaidTrackerConfig config, Integer gap) {
+		if (config != null && !config.showPersonalBest()) {
+			return null;
+		}
+		return gap;
+	}
+
+	private void scrollToTop() {
+		JViewport viewport = viewport();
+		if (viewport != null) {
+			viewport.setViewPosition(new java.awt.Point(0, 0));
+		}
+	}
+
+	/** Completed Chambers raids since 4:00, under Average and Target when the setting is on. */
+	private void refreshRaidsToday() {
+		boolean show = config != null && config.showRaidsToday() && !"Best".equals(focus);
+		raidsTodayBar.setVisible(show);
+		if (!show) {
+			return;
+		}
+		int count = ChambersFacts.raidsToday(all, System.currentTimeMillis());
+		raidsTodayLabel.setText(ChambersFacts.raidsTodayLabel(count));
+		stretch(raidsTodayBar);
 	}
 
 	private void watchViewport() {
@@ -317,15 +374,16 @@ public class ChambersTimesView extends JPanel {
 			diffLabel = null;
 		}
 		final JPanel tick = mark(row);
+		final JPanel skull = skull(row);
 		JPanel line = new JPanel(null) {
 			@Override
 			public void doLayout() {
-				layoutLine(this, tick, name, timeLabel, diffLabel);
+				layoutLine(this, tick, skull, name, timeLabel, diffLabel, row.died);
 			}
 
 			@Override
 			public Dimension getPreferredSize() {
-				return lineSize(this, name, timeLabel, diffLabel);
+				return lineSize(this, name, timeLabel, diffLabel, row.died);
 			}
 		};
 		line.setBackground(row.open ? new Color(46, 46, 46) : CARD);
@@ -334,6 +392,7 @@ public class ChambersTimesView extends JPanel {
 			new EmptyBorder(0, 4, 0, 6)
 		));
 		line.add(tick);
+		line.add(skull);
 		line.add(name);
 		line.add(timeLabel);
 		if (diffLabel != null) {
@@ -345,9 +404,10 @@ public class ChambersTimesView extends JPanel {
 	}
 
 	/**
-	 * Time and diff sit on the right at a shared width. The room name uses whatever width is left.
+	 * Time and diff sit on the right at a shared width.
+	 * The room name keeps its own width, and a skull sits just after that text.
 	 */
-	private void layoutLine(JPanel line, JPanel tick, JLabel name, JLabel timeLabel, JLabel diffLabel) {
+	private void layoutLine(JPanel line, JPanel tick, JPanel skull, JLabel name, JLabel timeLabel, JLabel diffLabel, boolean died) {
 		Insets insets = line.getInsets();
 		int top = insets.top;
 		int height = Math.max(1, line.getHeight() - top - insets.bottom);
@@ -362,16 +422,32 @@ public class ChambersTimesView extends JPanel {
 		int left = insets.left;
 		tick.setBounds(left, top, 3, height);
 		left += 7;
-		name.setBounds(left, top, Math.max(0, right - left), height);
+		int skullW = died ? SKULL_GAP + SKULL : 0;
+		int nameW = name.getPreferredSize().width + 2;
+		int room = Math.max(0, right - left);
+		if (nameW + skullW > room) {
+			nameW = Math.max(0, room - skullW);
+		}
+		name.setBounds(left, top, nameW, height);
+		if (died) {
+			skull.setVisible(true);
+			skull.setBounds(left + nameW + SKULL_GAP, top, SKULL, height);
+		} else {
+			skull.setVisible(false);
+			skull.setBounds(0, 0, 0, 0);
+		}
 	}
 
-	private Dimension lineSize(JPanel line, JLabel name, JLabel timeLabel, JLabel diffLabel) {
+	private Dimension lineSize(JPanel line, JLabel name, JLabel timeLabel, JLabel diffLabel, boolean died) {
 		Insets insets = line.getInsets();
 		int height = Math.max(name.getPreferredSize().height, timeLabel.getPreferredSize().height);
 		if (diffLabel != null) {
 			height = Math.max(height, diffLabel.getPreferredSize().height);
 		}
 		int width = insets.left + insets.right + 7 + name.getPreferredSize().width + NAME_GAP + Math.max(0, timeColumn);
+		if (died) {
+			width += SKULL_GAP + SKULL;
+		}
 		if (diffLabel != null && diffColumn > 0) {
 			width += COLUMN_GAP + diffColumn;
 		}
@@ -563,6 +639,53 @@ public class ChambersTimesView extends JPanel {
 		return mark;
 	}
 
+	/** A small skull drawn just after the room name. Hidden when that room has no death. */
+	private static JPanel skull(ChambersTimes.Row row) {
+		JPanel slot = new JPanel() {
+			@Override
+			public Dimension getPreferredSize() {
+				return new Dimension(SKULL, SKULL);
+			}
+
+			@Override
+			public Dimension getMinimumSize() {
+				return new Dimension(SKULL, SKULL);
+			}
+
+			@Override
+			public Dimension getMaximumSize() {
+				return new Dimension(SKULL, Short.MAX_VALUE);
+			}
+
+			@Override
+			protected void paintComponent(Graphics graphics) {
+				if (!row.died) {
+					return;
+				}
+				Graphics2D g = (Graphics2D) graphics.create();
+				g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+				int x = Math.max(0, (getWidth() - SKULL) / 2);
+				int y = Math.max(0, (getHeight() - SKULL) / 2);
+				g.setColor(new Color(245, 245, 245));
+				g.fillRoundRect(x, y, 13, 9, 8, 8);
+				g.fillRoundRect(x + 1, y + 7, 11, 6, 3, 3);
+				g.setColor(new Color(32, 32, 36));
+				g.fillOval(x + 2, y + 2, 3, 4);
+				g.fillOval(x + 8, y + 2, 3, 4);
+				g.fillPolygon(new int[] {x + 6, x + 4, x + 8}, new int[] {y + 6, y + 9, y + 9}, 3);
+				g.fillRect(x + 2, y + 10, 9, 2);
+				g.setColor(new Color(245, 245, 245));
+				g.fillRect(x + 4, y + 10, 1, 2);
+				g.fillRect(x + 6, y + 10, 1, 2);
+				g.fillRect(x + 8, y + 10, 1, 2);
+				g.dispose();
+			}
+		};
+		slot.setOpaque(false);
+		slot.setVisible(row.died);
+		return slot;
+	}
+
 	/**
 	 * Widest time and widest comparison in this table, plus a little slack.
 	 * A row with no comparison still keeps the comparison column when any other row has one.
@@ -641,33 +764,42 @@ public class ChambersTimesView extends JPanel {
 		return good ? GREEN : RED;
 	}
 
-	private JPanel filters(String mode, String size) {
-		JPanel combos = new JPanel(new GridLayout(1, 2, 4, 0));
-		combos.setOpaque(false);
-		combos.add(combo(new String[] {ChambersFilter.ALL, ChambersFilter.REGULAR, ChambersFilter.REGULAR_FULL, ChambersFilter.CM}, mode, "mode"));
+	/** Type and party size. Shown only while the Filter tab is open. */
+	private JPanel filterPanel(String mode, String size) {
+		JPanel card = new JPanel();
+		card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+		card.setBackground(CARD);
+		card.setAlignmentX(LEFT_ALIGNMENT);
+		card.setBorder(new CompoundBorder(
+			new MatteBorder(1, 0, 1, 0, HAIR),
+			new EmptyBorder(8, 8, 10, 8)
+		));
+		card.add(filterField(
+			"Type",
+			combo(new String[] {ChambersFilter.ALL, ChambersFilter.REGULAR, ChambersFilter.REGULAR_FULL, ChambersFilter.CM}, mode, "mode")
+		));
+		card.add(Box.createRigidArea(new Dimension(0, 8)));
 		List<String> sizes = ChambersFilter.sizeChoices(all);
 		if (!sizes.contains(size)) {
 			size = ChambersFilter.ALL;
 		}
-		combos.add(combo(sizes.toArray(new String[0]), size, "size"));
-		kcLabel.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
-		kcLabel.setForeground(Color.WHITE);
-		kcLabel.setHorizontalAlignment(SwingConstants.RIGHT);
-		kcLabel.setBorder(new EmptyBorder(0, 4, 0, 2));
-		kcLabel.setText("In progress");
-		int kcWidth = kcLabel.getPreferredSize().width;
-		kcLabel.setText("");
-		kcLabel.setPreferredSize(new Dimension(kcWidth, FILTER_HEIGHT));
-		kcLabel.setMinimumSize(new Dimension(kcWidth, FILTER_HEIGHT));
-		kcLabel.setMaximumSize(new Dimension(kcWidth, FILTER_HEIGHT));
-		JPanel row = new JPanel(new BorderLayout(4, 0));
-		row.setOpaque(false);
-		row.setAlignmentX(LEFT_ALIGNMENT);
-		row.add(combos, BorderLayout.CENTER);
-		row.add(kcLabel, BorderLayout.EAST);
-		row.setPreferredSize(new Dimension(0, FILTER_HEIGHT));
-		stretch(row);
-		return row;
+		card.add(filterField("Size", combo(sizes.toArray(new String[0]), size, "size")));
+		stretch(card);
+		return card;
+	}
+
+	private JPanel filterField(String name, JComboBox<String> box) {
+		JPanel field = new JPanel(new BorderLayout(0, 2));
+		field.setOpaque(false);
+		field.setAlignmentX(LEFT_ALIGNMENT);
+		JLabel label = text(name, ColorScheme.LIGHT_GRAY_COLOR);
+		label.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11));
+		label.setBorder(new EmptyBorder(0, 1, 0, 0));
+		field.add(label, BorderLayout.NORTH);
+		field.add(box, BorderLayout.CENTER);
+		Dimension pref = field.getPreferredSize();
+		field.setMaximumSize(new Dimension(Short.MAX_VALUE, Math.max(1, pref.height)));
+		return field;
 	}
 
 	private JComboBox<String> combo(String[] values, String selected, String field) {
@@ -699,14 +831,34 @@ public class ChambersTimesView extends JPanel {
 		return bar;
 	}
 
-	private JPanel header(String value) {
+	/**
+	 * Section title on the left. The kill-count slot, when present, is the width of {@code In progress}
+	 * and sits on the right of the same bar.
+	 */
+	private JPanel header(String value, boolean killCount, String badge) {
 		JPanel bar = new JPanel(new BorderLayout());
 		bar.setBackground(BAR);
 		bar.setBorder(new EmptyBorder(1, 6, 0, 6));
 		bar.add(text(value, ColorScheme.BRAND_ORANGE), BorderLayout.WEST);
+		if (killCount) {
+			JLabel kc = text(badge == null ? "" : badge, Color.WHITE);
+			kc.setHorizontalAlignment(SwingConstants.RIGHT);
+			int width = kcSlotWidth();
+			Dimension size = new Dimension(width, Math.max(1, kc.getPreferredSize().height));
+			kc.setPreferredSize(size);
+			kc.setMinimumSize(size);
+			kc.setMaximumSize(size);
+			bar.add(kc, BorderLayout.EAST);
+		}
 		stretch(bar);
 		inheritCopy(bar);
 		return bar;
+	}
+
+	/** Same width on every Times view, so a short count does not pull the title sideways. */
+	private static int kcSlotWidth() {
+		JLabel probe = text("In progress", Color.WHITE);
+		return probe.getPreferredSize().width;
 	}
 
 	private JPanel floorGap() {
@@ -746,6 +898,15 @@ public class ChambersTimesView extends JPanel {
 		return caption.startsWith("KC ") || caption.startsWith("CM ") || "In progress".equals(caption);
 	}
 
+	private static boolean hasGroup(List<ChambersTimes.Row> rows, String group) {
+		for (int i = 0; i < rows.size(); i++) {
+			if (group.equals(rows.get(i).group)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private static int signature(RaidTracker raid) {
 		if (raid == null) {
 			return 0;
@@ -759,6 +920,7 @@ public class ChambersTimesView extends JPanel {
 		}
 		sig = 31 * sig + listSig(raid.getOlmMageHandTimes());
 		sig = 31 * sig + listSig(raid.getOlmPhaseTimes());
+		sig = 31 * sig + ChambersFacts.deathSignature(raid);
 		return sig;
 	}
 
@@ -778,16 +940,25 @@ public class ChambersTimesView extends JPanel {
 	 * Full-width switch. The label is painted, so a narrow sidebar cannot clip it to "Sp..." or "Ra...".
 	 */
 	private final class ChoiceStrip extends JPanel {
+		private static final int FILTER_INDEX = Integer.MAX_VALUE;
+
 		private final String[] names;
 		private final String selected;
 		private final String field;
+		/** Average, Target, and Best keep a short Filter tab on the right. The Best choice strip does not. */
+		private final boolean filterTab;
 		/** Label under the pointer when the button went down. Release on that same label switches. */
 		private int pressedIndex = -1;
 
 		private ChoiceStrip(String[] names, String selected, String field) {
+			this(names, selected, field, false);
+		}
+
+		private ChoiceStrip(String[] names, String selected, String field, boolean filterTab) {
 			this.names = names;
 			this.selected = selected;
 			this.field = field;
+			this.filterTab = filterTab;
 			setOpaque(true);
 			setBackground(BAR);
 			setAlignmentX(LEFT_ALIGNMENT);
@@ -797,7 +968,11 @@ public class ChambersTimesView extends JPanel {
 				@Override
 				public void mouseMoved(MouseEvent event) {
 					int index = indexAt(event.getX());
-					setToolTipText(index < 0 ? null : tip(names[index]));
+					if (index == FILTER_INDEX) {
+						setToolTipText(filterTip());
+					} else {
+						setToolTipText(index < 0 ? null : tip(names[index]));
+					}
 				}
 			});
 			addMouseListener(new MouseAdapter() {
@@ -814,7 +989,16 @@ public class ChambersTimesView extends JPanel {
 						return;
 					}
 					int index = indexAt(event.getX());
-					if (index >= 0 && index == pressed && !names[index].equals(selected)) {
+					if (index < 0 || index != pressed) {
+						return;
+					}
+					if (index == FILTER_INDEX) {
+						if (!"Filter".equals(selected)) {
+							choice.choose(field, "Filter");
+						}
+						return;
+					}
+					if (!names[index].equals(selected)) {
 						choice.choose(field, names[index]);
 					}
 				}
@@ -842,38 +1026,69 @@ public class ChambersTimesView extends JPanel {
 			Graphics2D g = (Graphics2D) graphics.create();
 			g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 			int width = getWidth();
-			int height = getHeight();
+			int filterW = trailingWidth(width);
+			int body = Math.max(0, width - filterW);
 			int count = Math.max(1, names.length);
-			int cell = width / count;
+			int cell = body / count;
 			for (int i = 0; i < names.length; i++) {
 				int x = i * cell;
-				int span = i == names.length - 1 ? width - x : cell;
+				int span = i == names.length - 1 ? body - x : cell;
 				boolean on = names[i].equals(selected);
-				Shape clip = g.getClip();
-				g.clipRect(x, 0, span, height);
-				g.setColor(on ? Color.WHITE : ColorScheme.LIGHT_GRAY_COLOR);
-				Font font = fontThatFits(g, names[i], span - 8);
-				g.setFont(font);
-				FontMetrics metrics = g.getFontMetrics();
-				int textX = x + Math.max(4, (span - metrics.stringWidth(names[i])) / 2);
-				int textY = (height - metrics.getHeight()) / 2 + metrics.getAscent();
-				g.drawString(names[i], textX, textY);
-				g.setClip(clip);
-				g.setColor(on ? ColorScheme.BRAND_ORANGE : HAIR);
-				g.fillRect(x, height - 2, span, 2);
-				if (i > 0) {
-					g.setColor(HAIR);
-					g.drawLine(x, 6, x, height - 8);
-				}
+				paintCell(g, x, span, names[i], on, on ? Color.WHITE : ColorScheme.LIGHT_GRAY_COLOR);
+			}
+			if (filterW > 0) {
+				Color color = filtersOpen ? Color.WHITE : filterAccent();
+				paintCell(g, body, filterW, "Filter", filtersOpen, color);
 			}
 			g.dispose();
+		}
+
+		private void paintCell(Graphics2D g, int x, int span, String name, boolean on, Color color) {
+			if (span <= 0) {
+				return;
+			}
+			int height = getHeight();
+			Shape clip = g.getClip();
+			g.clipRect(x, 0, span, height);
+			g.setColor(color);
+			Font font = fontThatFits(g, name, span - 8);
+			g.setFont(font);
+			FontMetrics metrics = g.getFontMetrics();
+			int textX = x + Math.max(2, (span - metrics.stringWidth(name)) / 2);
+			int textY = (height - metrics.getHeight()) / 2 + metrics.getAscent();
+			g.drawString(name, textX, textY);
+			g.setClip(clip);
+			g.setColor(on ? ColorScheme.BRAND_ORANGE : HAIR);
+			g.fillRect(x, height - 2, span, 2);
+			if (x > 0) {
+				g.setColor(HAIR);
+				g.drawLine(x, 6, x, height - 8);
+			}
+		}
+
+		/** Filter keeps just enough room for its label. The other tabs share what is left. */
+		private int trailingWidth(int width) {
+			if (!filterTab || width <= 0) {
+				return 0;
+			}
+			int need = getFontMetrics(SWITCH).stringWidth("Filter") + 14;
+			int widest = Math.max(32, width / 3);
+			return Math.min(need, widest);
 		}
 
 		private int indexAt(int x) {
 			if (names.length == 0 || getWidth() <= 0 || x < 0) {
 				return -1;
 			}
-			int index = x * names.length / getWidth();
+			int filterW = trailingWidth(getWidth());
+			int body = getWidth() - filterW;
+			if (filterW > 0 && x >= body) {
+				return FILTER_INDEX;
+			}
+			if (body <= 0) {
+				return -1;
+			}
+			int index = x * names.length / body;
 			if (index < 0 || index >= names.length) {
 				return -1;
 			}
@@ -921,7 +1136,22 @@ public class ChambersTimesView extends JPanel {
 			if ("PPH".equals(name)) {
 				return "Highest points per hour";
 			}
+			if ("Filter".equals(name)) {
+				return filterTip();
+			}
 			return name;
+		}
+
+		/** Orange when a filter is on, so the choice stays visible from Average, Target, and Best. */
+		private Color filterAccent() {
+			if (ChambersFilter.ALL.equals(mode) && ChambersFilter.ALL.equals(size)) {
+				return ColorScheme.LIGHT_GRAY_COLOR;
+			}
+			return ColorScheme.BRAND_ORANGE;
+		}
+
+		private String filterTip() {
+			return mode + ", " + size;
 		}
 	}
 

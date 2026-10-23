@@ -16,8 +16,8 @@ import java.util.List;
 import javax.swing.JPanel;
 
 /**
- * One pace line centered on your average. The personal best is a dashed line above it.
- * A point above the average is ahead. Past the personal best, the point is gold.
+ * One pace line. Zero is the average, or the target on Target.
+ * The personal best is a dashed line. A point above zero is ahead. Past the personal best, the point is gold.
  */
 public class PaceLine extends JPanel {
 	private static final Color PAPER = new Color(40, 40, 40);
@@ -115,7 +115,8 @@ public class PaceLine extends JPanel {
 		int right = Math.max(left + 20, getWidth() - 8);
 		int top = 8;
 		int line = Math.max(13, g.getFontMetrics().getHeight());
-		int bottom = getHeight() - line - 18;
+		boolean showPb = personalBestGap != null;
+		int bottom = getHeight() - (showPb ? line + 18 : line + 4);
 		int maxAbs = 24;
 		int gap = personalBestGap == null ? 0 : personalBestGap;
 		for (int i = 0; i < marks.size(); i++) {
@@ -160,8 +161,8 @@ public class PaceLine extends JPanel {
 		}
 		ChambersTimes.Mark last = marks.get(marks.size() - 1);
 		g.setColor(color(last.aheadOfAverage));
-		g.drawString(compared(last.label, last.aheadOfAverage, comparedWith), 4, getHeight() - line - 2);
-		if (personalBestGap != null) {
+		g.drawString(compared(last.label, last.aheadOfAverage, comparedWith), 4, showPb ? getHeight() - line - 2 : getHeight() - 2);
+		if (showPb) {
 			int aheadOfBest = last.aheadOfAverage - personalBestGap;
 			g.setColor(aheadOfBest > 0 ? GOLD : color(aheadOfBest));
 			g.drawString(compared(last.label, aheadOfBest, "PB"), 4, getHeight() - 2);

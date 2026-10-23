@@ -12,8 +12,15 @@ repositories {
 
 def runeLiteVersion = findProperty('rlVersion') ?: 'latest.release'
 
+configurations {
+	injectedClient {
+		transitive = false
+	}
+}
+
 dependencies {
 	compileOnly group: 'net.runelite', name:'client', version: runeLiteVersion
+	injectedClient group: 'net.runelite', name: 'injected-client', version: runeLiteVersion
     implementation group: 'com.google.inject.extensions', name: 'guice-multibindings', version: '4.1.0', {
         exclude group: 'com.google.inject'
     }
@@ -24,6 +31,7 @@ dependencies {
     testImplementation "org.mockito:mockito-core:3.3.3"
 	testImplementation "com.google.inject.extensions:guice-testlib:4.2.3"
     testImplementation 'junit:junit:4.13.1'
+    testImplementation 'org.ow2.asm:asm-tree:9.7'
     testImplementation group: 'net.runelite', name:'client', version: runeLiteVersion
     testImplementation group: 'net.runelite', name:'jshell', version: runeLiteVersion
 }
@@ -41,11 +49,30 @@ tasks.named('test') {
 	jvmArgs '-ea', '--add-opens=java.base/java.lang=ALL-UNNAMED'
 }
 
+def patchedInjectedClient = layout.buildDirectory.file('injected-client-menu-index.jar')
+
+// Mask NPC menu indexes on the released client. See PatchMenuIndex.
+tasks.register('patchInjectedClient', JavaExec) {
+	group = 'application'
+	description = 'Mask NPC menu indexes in the released RuneLite client'
+	dependsOn tasks.named('compileTestJava')
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.raidtracker.PatchMenuIndex'
+	doFirst {
+		args configurations.injectedClient.singleFile.absolutePath, patchedInjectedClient.get().asFile.absolutePath
+	}
+	inputs.files(configurations.injectedClient)
+	outputs.file(patchedInjectedClient)
+}
+
 // Developer client with this plugin loaded. Same shape as the RuneLite example plugin.
 tasks.register('run', JavaExec) {
 	group = 'application'
 	description = 'Run RuneLite with Raid Data Tracker loaded'
-	classpath = sourceSets.test.runtimeClasspath
+	dependsOn tasks.named('patchInjectedClient')
+	classpath = files(patchedInjectedClient) + sourceSets.test.runtimeClasspath.filter { file ->
+		!file.name.startsWith('injected-client-')
+	}
 	mainClass = 'com.raidtracker.RunClientAndPlugin'
 	jvmArgs '-ea', '--add-opens=java.base/java.lang=ALL-UNNAMED'
 	args '--developer-mode', '--debug'

@@ -133,6 +133,8 @@ public class RaidTrackerPlugin extends Plugin
 	private FileReadWriter fw;
 	private boolean writerStarted = false;
 	private boolean raidStarted = false;
+	/** A completed Chambers raid whose append failed. A later tick tries the same raid again. */
+	private boolean chambersSavePending = false;
 
 	private static final WorldPoint TEMP_LOCATION = new WorldPoint(3360, 5152, 2);
 
@@ -210,7 +212,7 @@ public class RaidTrackerPlugin extends Plugin
 			return;
 		}
 		// The gray total is calculated. It is not a reason to redraw the sidebar.
-		if ("cmSoloTotal".equals(e.getKey())) {
+		if ("cmSoloTotal".equals(e.getKey()) || "cmPph".equals(e.getKey()) || "cmPointsLine".equals(e.getKey())) {
 			return;
 		}
 		if (targetSettings != null && !targetSettings.isBusy()) {
@@ -255,15 +257,7 @@ public class RaidTrackerPlugin extends Plugin
 					return;
 				}
 
-				chambers().settleChambersDeathRooms(raidTracker);
-				fw.writeToFile(raidTracker);
-
-				writerStarted = true;
-
-				SwingUtilities.invokeLater(() -> {
-					panel.addDrop(raidTracker);
-					reset();
-				});
+				saveCompletedChambers();
 			}
 		}
 
@@ -449,6 +443,9 @@ public class RaidTrackerPlugin extends Plugin
 		if (chambers().isLive() && raidTracker.isInRaidChambers() && panel.wantsLiveChambers()) {
 			chambers().pushLiveChambers();
 		}
+		if (chambersSavePending) {
+			saveCompletedChambers();
+		}
 
 		if (raidTracker.isInTombsOfAmascut() && client.getWidget(WIDGET_TIMER) != null) {
 			if (!Objects.equals(Objects.requireNonNull(client.getWidget(WIDGET_TIMER)).getText(), "00:00")
@@ -510,16 +507,7 @@ public class RaidTrackerPlugin extends Plugin
 				}
 
                 raidTracker.setLootList(lootListFactory(rewardItemContainer.getItems()));
-
-                writerStarted = true;
-
-                chambers().settleChambersDeathRooms(raidTracker);
-                fw.writeToFile(raidTracker);
-
-                SwingUtilities.invokeLater(() -> {
-                    panel.addDrop(raidTracker);
-                    reset();
-                });
+                saveCompletedChambers();
 
                 break;
 
@@ -1142,14 +1130,37 @@ public class RaidTrackerPlugin extends Plugin
 		return RT;
 	}
 
+	/** Appends a completed Chambers raid. A failed append keeps that raid and tries again later. */
+	private void saveCompletedChambers()
+	{
+		if (writerStarted || !raidTracker.isRaidComplete()) {
+			chambersSavePending = false;
+			return;
+		}
+		chambers().settleChambersDeathRooms(raidTracker);
+		if (!fw.writeToFile(raidTracker)) {
+			chambersSavePending = true;
+			return;
+		}
+		chambersSavePending = false;
+		writerStarted = true;
+		RaidTracker finished = raidTracker;
+		SwingUtilities.invokeLater(() -> {
+			panel.retireLiveChambers();
+			panel.addDrop(finished);
+			reset();
+		});
+	}
+
 	private void reset()
 	{
+		chambersSavePending = false;
+		chambers().resetChambersState();
 		raidTracker = new RaidTracker();
         raidTracker.setAccountHash(client.getAccountHash());
         raidTracker.setProfileType(String.valueOf(RuneScapeProfileType.getCurrent(client)));
 		writerStarted = false;
 		raidStarted = false;
-		chambers().resetChambersState();
 	}
 
 	@Subscribe

@@ -10,6 +10,8 @@ import java.util.Map;
 /**
  * Chambers times against the one target sheet. Every filter uses it.
  * Item and strategy boxes change the comparison. The typed boxes stay as saved.
+ * The pace graph draws the personal best the same way Average does.
+ * That line is the target raid time minus the fastest raid time in the comparison.
  */
 public final class ChambersTargets {
 	private static final int SOLO_PHASES = 3;
@@ -56,6 +58,45 @@ public final class ChambersTargets {
 		return ChambersFacts.formatTime(raid);
 	}
 
+	/** Styled total, then the plain total and the added time when a toggle adds some. */
+	public static String settingsTotalLine(RaidTrackerConfig config) {
+		String styled = settingsTotal(config);
+		int extra = addSeconds(config, "Target total");
+		if (styled.isEmpty() || extra <= 0) {
+			return styled;
+		}
+		Integer base = raidSeconds(config, false);
+		if (base == null || base <= 0) {
+			return styled;
+		}
+		return styled + " (" + ChambersFacts.formatTime(base) + " + " + ChambersFacts.formatTime(extra) + ")";
+	}
+
+	/** Saved points plus the money-run bonus. The parentheses are the saved total and that bonus. */
+	public static String settingsPointsLine(RaidTrackerConfig config) {
+		if (config == null) {
+			return "";
+		}
+		Integer base = typed(config).get("points");
+		if (base == null || base <= 0) {
+			return "";
+		}
+		int extra = pointBonus(config);
+		if (extra <= 0) {
+			return Integer.toString(base);
+		}
+		return (base + extra) + " (" + base + " + " + extra + ")";
+	}
+
+	/** Points divided by the 3-phase target raid time. Blank when either piece is missing. */
+	public static String settingsPph(RaidTrackerConfig config) {
+		Integer pph = targets(config, null).get("pph");
+		if (pph == null || pph <= 0) {
+			return "";
+		}
+		return Integer.toString(pph);
+	}
+
 	/**
 	 * Extra seconds a toggle adds on top of a saved room, or on top of the plain target total.
 	 * Zero when that row has no target, or the toggles add nothing.
@@ -95,6 +136,32 @@ public final class ChambersTargets {
 			return "";
 		}
 		return "+ " + ChambersFacts.formatTime(extra);
+	}
+
+	/** Extra points a money-run box adds on top of the saved total. Zero when that box is blank or off. */
+	public static int addPoints(RaidTrackerConfig config, String label) {
+		if (config == null || !"Total Points".equals(label)) {
+			return 0;
+		}
+		Integer typed = typed(config).get("points");
+		if (typed == null || typed <= 0) {
+			return 0;
+		}
+		return pointBonus(config);
+	}
+
+	private static int pointBonus(RaidTrackerConfig config) {
+		int extra = 0;
+		if (config.milkVespula()) {
+			extra += 1000;
+		}
+		if (config.killRope()) {
+			extra += 3248;
+		}
+		if (config.overThieve()) {
+			extra += 718;
+		}
+		return extra;
 	}
 
 	private static int totalAddSeconds(RaidTrackerConfig config) {
@@ -175,7 +242,7 @@ public final class ChambersTargets {
 			return text(config.cmTotalPoints());
 		}
 		if ("PPH".equals(label)) {
-			return text(config.cmPph());
+			return settingsPph(config);
 		}
 		return "";
 	}
@@ -232,7 +299,7 @@ public final class ChambersTargets {
 				continue;
 			}
 			actual.put(key, shown);
-			rows.add(row(key, shown, targets.get(key), false));
+			rows.add(row(key, shown, targets.get(key), false, ChambersFacts.diedInRoom(subject, ChambersTimes.label(key))));
 		}
 		if (showingLive && openSeconds > 0) {
 			rows.add(new ChambersTimes.Row("Current", "Current", 0, ChambersFacts.formatTime(openSeconds), "", null, false, true, false));
@@ -242,7 +309,8 @@ public final class ChambersTargets {
 		}
 		boolean finished = !showingLive || subject.getRaidTime() > 0;
 		List<ChambersTimes.Mark> pace = pace(keys, actual, targets, finished);
-		return new ChambersTimes.Table(caption(subject, showingLive), rows, pace, null, true, "target");
+		List<RaidTracker> comparison = showingLive ? raids : beforeLast(raids);
+		return new ChambersTimes.Table(caption(subject, showingLive), rows, pace, personalBestGap(comparison, targets.get("raid")), true, "target");
 	}
 
 	private static ChambersTimes.Table lastN(List<RaidTracker> raids, RaidTrackerConfig config, String mode, String size, int count) {
@@ -274,11 +342,31 @@ public final class ChambersTargets {
 			return emptyTarget("No room times in this filter yet.");
 		}
 		List<ChambersTimes.Mark> pace = pace(keys, actual, targets, actual.containsKey("raid"));
-		return new ChambersTimes.Table("", rows, pace, null, true, "target");
+		return new ChambersTimes.Table("", rows, pace, personalBestGap(slice, targets.get("raid")), true, "target");
 	}
 
 	private static ChambersTimes.Table emptyTarget(String caption) {
 		return new ChambersTimes.Table(caption, new ArrayList<ChambersTimes.Row>(), new ArrayList<ChambersTimes.Mark>(), null, true, "target");
+	}
+
+	/**
+	 * Seconds the fastest raid in this comparison sits ahead of the target line.
+	 * This uses the raids before the one on screen, or every saved raid while one is live.
+	 * Last N and Avg use the raids in that average. A raid under 10 seconds is left out.
+	 */
+	private static Integer personalBestGap(List<RaidTracker> comparison, Integer targetRaid) {
+		Integer best = ChambersTimes.fastestRaidSeconds(comparison);
+		if (best == null || targetRaid == null || targetRaid <= 0) {
+			return null;
+		}
+		return targetRaid - best;
+	}
+
+	private static List<RaidTracker> beforeLast(List<RaidTracker> raids) {
+		if (raids.size() <= 1) {
+			return new ArrayList<>();
+		}
+		return raids.subList(0, raids.size() - 1);
 	}
 
 	static Map<String, Integer> targets(RaidTrackerConfig config, List<RaidTracker> raids) {
@@ -310,7 +398,6 @@ public final class ChambersTargets {
 		putTime(sheet, "head", config.cmOlmHead());
 		putTime(sheet, "between", config.cmBetweenRooms());
 		putCount(sheet, "points", config.cmTotalPoints());
-		putCount(sheet, "pph", config.cmPph());
 		return sheet;
 	}
 
@@ -322,8 +409,8 @@ public final class ChambersTargets {
 		if (!config.useTbow()) {
 			shift(sheet, "Shamans", 6);
 			shift(sheet, "Vanguards", 2);
-			shift(sheet, "Vasa", 30);
-			shift(sheet, "Muttadiles", 10);
+			shift(sheet, "Vasa", 22);
+			shift(sheet, "Muttadiles", 13);
 			shift(sheet, "head", 20);
 			if (killRope) {
 				shift(sheet, "Tightrope", 8);
@@ -357,11 +444,12 @@ public final class ChambersTargets {
 			shift(sheet, "Tightrope", 59);
 		}
 		if (config.milkVespula()) {
-			shift(sheet, "Vespula", 18);
+			shift(sheet, "Vespula", 15);
 		}
 		if (config.overThieve()) {
 			shift(sheet, "Thieving", 4);
 		}
+		shift(sheet, "points", pointBonus(config));
 		if (config.sippingPools()) {
 			shift(sheet, "between", 12);
 		}
@@ -445,10 +533,21 @@ public final class ChambersTargets {
 		Integer pre = sheet.get("pre");
 		Integer olm = sheet.get("olm");
 		Integer between = sheet.get("between");
-		if (pre == null || pre <= 0 || olm == null || olm <= 0 || between == null || between <= 0) {
+		if (pre != null && pre > 0 && olm != null && olm > 0 && between != null && between > 0) {
+			sheet.put("raid", pre + olm + between);
+		}
+		derivePph(sheet);
+	}
+
+	/** Same truncation as a logged raid. A missing raid time or points target clears it. */
+	private static void derivePph(Map<String, Integer> sheet) {
+		Integer points = sheet.get("points");
+		Integer raid = sheet.get("raid");
+		if (points == null || points <= 0 || raid == null || raid <= 0) {
+			sheet.remove("pph");
 			return;
 		}
-		sheet.put("raid", pre + olm + between);
+		sheet.put("pph", (int) (points / (raid / 3600.0)));
 	}
 
 	static int phaseCount(RaidTracker raid) {
@@ -526,6 +625,10 @@ public final class ChambersTargets {
 	}
 
 	private static ChambersTimes.Row row(String key, int value, Integer target, boolean open) {
+		return row(key, value, target, open, false);
+	}
+
+	private static ChambersTimes.Row row(String key, int value, Integer target, boolean open, boolean died) {
 		boolean points = "points".equals(key) || "pph".equals(key);
 		Integer delta = null;
 		String diff = "";
@@ -534,7 +637,7 @@ public final class ChambersTargets {
 			diff = points ? pointDiff(delta) : timeDiff(delta);
 		}
 		String shown = points ? Integer.toString(value) : ChambersFacts.formatTime(value);
-		return new ChambersTimes.Row(ChambersTimes.label(key), ChambersTimes.group(key), ChambersFacts.floorOf(key), shown, diff, delta, points, open, false);
+		return new ChambersTimes.Row(ChambersTimes.label(key), ChambersTimes.group(key), ChambersFacts.floorOf(key), shown, diff, delta, points, open, false, died);
 	}
 
 	private static Integer averageOf(List<RaidTracker> raids, String key, boolean includeIceMilking) {

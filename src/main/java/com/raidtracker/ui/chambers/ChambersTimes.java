@@ -29,8 +29,14 @@ public final class ChambersTimes {
 		public final boolean higher;
 		public final boolean open;
 		public final boolean gold;
+		/** One of your deaths happened in this room. Best splits and Last N leave this off. */
+		public final boolean died;
 
 		Row(String label, String group, int floor, String value, String aside, Integer delta, boolean higher, boolean open, boolean gold) {
+			this(label, group, floor, value, aside, delta, higher, open, gold, false);
+		}
+
+		Row(String label, String group, int floor, String value, String aside, Integer delta, boolean higher, boolean open, boolean gold, boolean died) {
 			this.label = label;
 			this.group = group;
 			this.floor = floor;
@@ -40,6 +46,7 @@ public final class ChambersTimes {
 			this.higher = higher;
 			this.open = open;
 			this.gold = gold;
+			this.died = died;
 		}
 	}
 
@@ -96,7 +103,7 @@ public final class ChambersTimes {
 				continue;
 			}
 			Double benchmark = averageOf(raids, key, includeIceMilking);
-			rows.add(row(key, shown, benchmark, null, false));
+			rows.add(row(key, shown, benchmark, null, false, subject));
 		}
 		if (showingLive && openSeconds > 0) {
 			rows.add(new Row("Current", "Current", 0, ChambersFacts.formatTime(openSeconds), "", null, false, true, false));
@@ -174,7 +181,7 @@ public final class ChambersTimes {
 			if (value == null) {
 				continue;
 			}
-			rows.add(row(keys.get(i), value, null, null, true));
+			rows.add(row(keys.get(i), value, null, null, true, raid));
 		}
 		return new Table(killCount(raid), rows, new ArrayList<Mark>(), null, false);
 	}
@@ -241,6 +248,18 @@ public final class ChambersTimes {
 			return null;
 		}
 		Double averageTotal = averageOf(comparison, "raid", false);
+		Integer best = fastestRaidSeconds(comparison);
+		if (averageTotal == null || best == null) {
+			return null;
+		}
+		return (int) Math.round(averageTotal) - best;
+	}
+
+	/** Fastest raid time that still counts. A split under 10 seconds is left out. */
+	static Integer fastestRaidSeconds(List<RaidTracker> comparison) {
+		if (comparison == null || comparison.isEmpty()) {
+			return null;
+		}
 		Integer best = null;
 		for (int i = 0; i < comparison.size(); i++) {
 			Integer time = valid(comparison.get(i), "raid");
@@ -249,10 +268,7 @@ public final class ChambersTimes {
 			}
 			best = best == null ? time : Math.min(best, time);
 		}
-		if (averageTotal == null || best == null) {
-			return null;
-		}
-		return (int) Math.round(averageTotal) - best;
+		return best;
 	}
 
 	private static List<RaidTracker> withoutLast(List<RaidTracker> raids) {
@@ -272,6 +288,10 @@ public final class ChambersTimes {
 	}
 
 	private static Row row(String key, int value, Double benchmark, String aside, boolean gold) {
+		return row(key, value, benchmark, aside, gold, null);
+	}
+
+	private static Row row(String key, int value, Double benchmark, String aside, boolean gold, RaidTracker deathsFrom) {
 		boolean points = higher(key);
 		Integer delta = null;
 		String diff = "";
@@ -280,7 +300,8 @@ public final class ChambersTimes {
 			diff = points ? pointDiff(delta) : timeDiff(delta);
 		}
 		String shown = points ? Integer.toString(value) : ChambersFacts.formatTime(value);
-		return new Row(label(key), group(key), ChambersFacts.floorOf(key), shown, aside == null || aside.isEmpty() ? diff : aside, delta, points, false, gold);
+		String name = label(key);
+		return new Row(name, group(key), ChambersFacts.floorOf(key), shown, aside == null || aside.isEmpty() ? diff : aside, delta, points, false, gold, ChambersFacts.diedInRoom(deathsFrom, name));
 	}
 
 	private static String caption(RaidTracker raid, boolean live) {

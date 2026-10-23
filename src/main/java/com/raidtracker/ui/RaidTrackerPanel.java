@@ -10,6 +10,7 @@ import com.raidtracker.WorldUtils;
 import com.raidtracker.filereadwriter.FileReadWriter;
 
 import java.awt.Insets;
+import java.awt.Point;
 import javax.swing.BorderFactory;
 import javax.swing.JTextPane;
 import javax.swing.text.SimpleAttributeSet;
@@ -41,6 +42,7 @@ import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JTextField;
+import javax.swing.JViewport;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.border.CompoundBorder;
@@ -141,11 +143,16 @@ public class RaidTrackerPanel extends PluginPanel {
 	private String chambersMode = "All";
 	private String chambersSize = "All";
 	private String timesFocus = "Average";
+	/** The Times filter dropdowns. Not remembered. Closed until the Filter tab is opened. */
+	private boolean chambersFiltersOpen;
 	private String bestFocus = "Splits";
 	private String targetSide = "This";
 	private int targetCount = 10;
 	private ChambersTimesView timesView;
 	private volatile boolean liveTimesOpen;
+	/** Bumped when a Chambers raid is saved, so a queued live paint cannot cover that page. */
+	private volatile int liveGeneration;
+	private boolean scrollTimesOnNextBuild;
 
     private JPanel regularDrops = new JPanel();
 
@@ -642,8 +649,12 @@ public class RaidTrackerPanel extends PluginPanel {
 		ArrayList<RaidTracker> raids = coxRTList == null ? new ArrayList<>() : coxRTList;
 		ChambersChoice choice = (field, value) -> chooseChambers(field, value);
 		if ("Times".equals(coxPage)) {
-			timesView = new ChambersTimesView(raids, chambersMode, chambersSize, timesFocus, bestFocus, choice, config, targetSide, targetCount);
+			timesView = new ChambersTimesView(raids, chambersMode, chambersSize, timesFocus, bestFocus, choice, config, targetSide, targetCount, chambersFiltersOpen);
 			panel.add(timesView);
+			if (scrollTimesOnNextBuild) {
+				scrollTimesOnNextBuild = false;
+				SwingUtilities.invokeLater(this::scrollTimesToTop);
+			}
 		} else {
 			timesView = null;
 			panel.add(new ChambersPurpleView(itemManager, raids));
@@ -661,7 +672,11 @@ public class RaidTrackerPanel extends PluginPanel {
 			chambersSize = value;
 			rememberChambersFilters();
 		} else if ("focus".equals(field)) {
-			timesFocus = value;
+			if ("Filter".equals(value)) {
+				chambersFiltersOpen = !chambersFiltersOpen;
+			} else {
+				timesFocus = value;
+			}
 		} else if ("best".equals(field)) {
 			bestFocus = value;
 		} else if ("target".equals(field)) {
@@ -732,11 +747,32 @@ public class RaidTrackerPanel extends PluginPanel {
 		return liveTimesOpen;
 	}
 
-	public void showLiveChambers(RaidTracker live, int openSeconds) {
-		if (!liveTimesOpen || timesView == null || !liveTargetOpen()) {
+	public int liveGeneration() {
+		return liveGeneration;
+	}
+
+	/** The saved raid owns Times. Live snapshots queued before this are dropped. */
+	public void retireLiveChambers() {
+		liveGeneration++;
+		scrollTimesOnNextBuild = true;
+	}
+
+	public void showLiveChambers(RaidTracker live, int openSeconds, int generation) {
+		if (generation != liveGeneration || !liveTimesOpen || timesView == null || !liveTargetOpen()) {
 			return;
 		}
 		timesView.showLive(live, openSeconds);
+	}
+
+	private void scrollTimesToTop() {
+		java.awt.Container cursor = timesView != null ? timesView : panel;
+		while (cursor != null) {
+			if (cursor instanceof JViewport) {
+				((JViewport) cursor).setViewPosition(new Point(0, 0));
+				return;
+			}
+			cursor = cursor.getParent();
+		}
 	}
 
 	public void clearLiveChambers() {

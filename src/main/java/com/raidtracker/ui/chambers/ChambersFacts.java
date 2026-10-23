@@ -4,6 +4,10 @@ import com.raidtracker.ChambersDeath;
 import com.raidtracker.RaidTracker;
 import com.raidtracker.UniqueDrop;
 import com.raidtracker.ui.RaidUniques;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -14,6 +18,8 @@ import java.util.List;
 public final class ChambersFacts {
 	public static final int FULL_LAYOUT_ROOMS = 11;
 	public static final double PURPLE_POINTS = 867600.0;
+	/** A logged raid before this hour still belongs to the previous day. */
+	public static final int RAID_DAY_START_HOUR = 4;
 
 	public static final String[] PREP_ROOMS = {
 		"Tekton",
@@ -133,15 +139,55 @@ public final class ChambersFacts {
 		return olm > 0 ? olm : -1;
 	}
 
-	/** Raid time that is not prep and not Olm. */
+	/**
+	 * Walk time before the Olm floor. Once the raid has a finish time this is still
+	 * {@code raidTime - prep - olm}. Before that, the lower floor total already decides it.
+	 */
 	public static int betweenSeconds(RaidTracker raid) {
 		int prep = preOlmSeconds(raid);
-		int olm = olmSeconds(raid);
-		if (raid == null || raid.getRaidTime() <= 0 || prep <= 0 || olm <= 0) {
+		if (raid == null || prep <= 0) {
 			return -1;
 		}
-		int between = raid.getRaidTime() - prep - olm;
+		if (raid.getRaidTime() > 0) {
+			int olm = olmSeconds(raid);
+			if (olm <= 0) {
+				return -1;
+			}
+			int between = raid.getRaidTime() - prep - olm;
+			return between > 0 ? between : -1;
+		}
+		if (raid.getLowerTime() <= 0) {
+			return -1;
+		}
+		int between = raid.getLowerTime() - prep;
 		return between > 0 ? between : -1;
+	}
+
+	/** True when this raid has one of your deaths stored on that room. */
+	public static boolean diedInRoom(RaidTracker raid, String room) {
+		if (raid == null || room == null || room.isEmpty() || raid.getDeaths() == null) {
+			return false;
+		}
+		for (int i = 0; i < raid.getDeaths().size(); i++) {
+			ChambersDeath death = raid.getDeaths().get(i);
+			if (death != null && room.equals(death.getRoom())) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public static int deathSignature(RaidTracker raid) {
+		if (raid == null || raid.getDeaths() == null) {
+			return 0;
+		}
+		int signature = raid.getDeaths().size();
+		for (int i = 0; i < raid.getDeaths().size(); i++) {
+			ChambersDeath death = raid.getDeaths().get(i);
+			String room = death == null ? null : death.getRoom();
+			signature = 31 * signature + (room == null ? 0 : room.hashCode());
+		}
+		return signature;
 	}
 
 	public static int mageSeconds(RaidTracker raid, int phase) {
@@ -300,6 +346,22 @@ public final class ChambersFacts {
 		copy.setOlmHeadTime(raid.getOlmHeadTime());
 		copy.setInRaidChambers(true);
 		copy.setRaidComplete(raid.isRaidComplete());
+		if (raid.getDeaths() != null && !raid.getDeaths().isEmpty()) {
+			ArrayList<ChambersDeath> deaths = new ArrayList<>();
+			for (int i = 0; i < raid.getDeaths().size(); i++) {
+				ChambersDeath death = raid.getDeaths().get(i);
+				if (death == null) {
+					continue;
+				}
+				ChambersDeath kept = new ChambersDeath();
+				kept.setRoom(death.getRoom());
+				kept.setPointsLost(death.getPointsLost());
+				deaths.add(kept);
+			}
+			if (!deaths.isEmpty()) {
+				copy.setDeaths(deaths);
+			}
+		}
 		if (raid.getOlmMageHandTimes() != null) {
 			copy.setOlmMageHandTimes(new ArrayList<>(raid.getOlmMageHandTimes()));
 		}
@@ -307,6 +369,43 @@ public final class ChambersFacts {
 			copy.setOlmPhaseTimes(new ArrayList<>(raid.getOlmPhaseTimes()));
 		}
 		return copy;
+	}
+
+	/**
+	 * Completed Chambers raids since 4:00 local time. {@code date} is epoch millis from when the raid was logged.
+	 * A raid before 4:00 still counts for the day before.
+	 */
+	public static int raidsToday(List<RaidTracker> raids, long nowMillis) {
+		return raidsToday(raids, nowMillis, ZoneId.systemDefault());
+	}
+
+	public static int raidsToday(List<RaidTracker> raids, long nowMillis, ZoneId zone) {
+		if (raids == null || raids.isEmpty()) {
+			return 0;
+		}
+		long start = raidDayStartMillis(nowMillis, zone);
+		int count = 0;
+		for (int i = 0; i < raids.size(); i++) {
+			RaidTracker raid = raids.get(i);
+			if (raid != null && raid.getDate() >= start && raid.getDate() <= nowMillis) {
+				count++;
+			}
+		}
+		return count;
+	}
+
+	public static long raidDayStartMillis(long nowMillis, ZoneId zone) {
+		ZoneId use = zone == null ? ZoneId.systemDefault() : zone;
+		ZonedDateTime now = Instant.ofEpochMilli(nowMillis).atZone(use);
+		LocalDate day = now.toLocalDate();
+		if (now.getHour() < RAID_DAY_START_HOUR) {
+			day = day.minusDays(1);
+		}
+		return day.atTime(RAID_DAY_START_HOUR, 0).atZone(use).toInstant().toEpochMilli();
+	}
+
+	public static String raidsTodayLabel(int count) {
+		return count == 1 ? "1 raid today" : count + " raids today";
 	}
 
 	public static String formatTime(int seconds) {

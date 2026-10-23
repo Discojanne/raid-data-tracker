@@ -21,6 +21,9 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -92,7 +95,8 @@ public class FileReadWriter {
 		"date"
 	};
 
-    public void writeToFile(RaidTracker raidTracker) {
+    /** Appends one raid. False means the line was not stored, so the caller can try again. */
+    public boolean writeToFile(RaidTracker raidTracker) {
         RaidType raidType = storedRaidType(raidTracker);
         String fileName = getRaidFileName(raidType);
 		if (raidType == null) {
@@ -105,8 +109,10 @@ public class FileReadWriter {
 			log.debug("writer started");
 			fw.write(line);
 			fw.write('\n');
+			return true;
         } catch (IOException ioe) {
 			log.error("IOException: {} in writeToFile", ioe.getMessage());
+			return false;
 		}
 	}
 
@@ -115,22 +121,7 @@ public class FileReadWriter {
 	}
 
     public String getJSONString(RaidTracker raidTracker, Gson gson, JsonParser parser, RaidType raidType) {
-		if (raidTracker.getOlmMageHandTimes() == null) {
-			raidTracker.setOlmMageHandTimes(new ArrayList<>());
-		}
-		if (raidTracker.getOlmPhaseTimes() == null) {
-			raidTracker.setOlmPhaseTimes(new ArrayList<>());
-		}
-		if (raidTracker.getDeaths() == null) {
-			raidTracker.setDeaths(new ArrayList<>());
-		}
-		if (raidTracker.getExtraDrops() == null) {
-			raidTracker.setExtraDrops(new ArrayList<>());
-		}
-		if (raidTracker.getUniques() == null) {
-			raidTracker.setUniques(new ArrayList<>());
-		}
-
+		// A missing list stays missing. A loaded line has null there, and filling it would write empty Chambers keys onto a rewrite.
 		JsonObject RTJson = parser.parse(gson.toJson(raidTracker)).getAsJsonObject();
 
 		// The chest loot stays a JSON array. A string property here used to be unwrapped with a global replace.
@@ -315,9 +306,7 @@ public class FileReadWriter {
 				body.append('\n');
 			}
 
-			try (FileWriter fw = new FileWriter(fileName, false)) {
-				fw.write(body.toString());
-			}
+			replaceFile(fileName, body.toString());
 		} catch (IOException e) {
 			log.error("Error occurred updating the log", e);
 		}
@@ -330,24 +319,30 @@ public class FileReadWriter {
 			StringBuilder body = new StringBuilder();
 
 			for (RaidTracker RT : RTList) {
-				if (RT.getLootSplitPaid() > 0) {
-					RT.setSpecialLootInOwnName(true);
-                } else {
-					// bit of a wonky check, so try to avoid with lootsplitpaid if possible
-                    String specialLoot = RT.getSpecialLoot() == null ? "" : RT.getSpecialLoot();
-                    RT.setSpecialLootInOwnName(RT.getLootList() != null && !RT.getLootList().isEmpty()
-                            && RT.getLootList().get(0).getName().equalsIgnoreCase(specialLoot));
-				}
-
 				body.append(getJSONString(RT, gson, parser, raidType));
 				body.append('\n');
 			}
 
-			try (FileWriter fw = new FileWriter(fileName, false)) {
-				fw.write(body.toString());
-			}
+			replaceFile(fileName, body.toString());
 		} catch (IOException e) {
 			log.error("Error occurred updating the log list", e);
+		}
+	}
+
+	/**
+	 * Writes the whole log beside the real file, then replaces it.
+	 * FileWriter keeps the reader's charset. A different charset would rewrite names the log already stored.
+	 */
+	private void replaceFile(String fileName, String body) throws IOException {
+		File target = new File(fileName);
+		File temp = new File(fileName + ".tmp");
+		try (FileWriter fw = new FileWriter(temp, false)) {
+			fw.write(body);
+		}
+		try {
+			Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+		} catch (AtomicMoveNotSupportedException ex) {
+			Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
 		}
 	}
 
