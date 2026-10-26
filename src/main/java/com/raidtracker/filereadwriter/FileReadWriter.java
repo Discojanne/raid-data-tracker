@@ -102,6 +102,10 @@ public class FileReadWriter {
             fileName = getRaidFileName(null);
 			log.warn("writeToFile called without an inRaid flag set.", new IllegalStateException());
 		}
+		if (fileName == null) {
+			log.warn("No character folder yet, so this raid was not written");
+			return;
+		}
 
         try {
 			log.debug("writer started");
@@ -374,6 +378,9 @@ public class FileReadWriter {
 		if (alternateFile.length() != 0) {
 			fileName = alternateFile;
 		}
+		if (fileName == null) {
+			return new ArrayList<>();
+		}
 
 		try {
 			JsonParser parser = new JsonParser();
@@ -448,10 +455,14 @@ public class FileReadWriter {
 	}
 
     public void createFolders() {
+		String folder = accountFolderName(username);
+		if (folder == null) {
+			return;
+		}
 		File base = storageRoot != null ? storageRoot : RUNELITE_DIR;
 		File dir = new File(base, "raid-data tracker");
 		IGNORE_RESULT(dir.mkdir());
-		dir = new File(dir, username);
+		dir = new File(dir, folder);
 		IGNORE_RESULT(dir.mkdir());
 		File dir_cox = new File(dir, "cox");
 		File dir_tob = new File(dir, "tob");
@@ -480,9 +491,39 @@ public class FileReadWriter {
 		}
 	}
 
-	public void updateUsername(final String username) {
-		this.username = username;
+	/**
+	 * Point the logs at one character. A blank login name is refused, so raids are not written
+	 * into the shared plugin folder. False means the folder did not change.
+	 */
+	public boolean updateUsername(final String username) {
+		String folder = accountFolderName(username);
+		if (folder == null) {
+			return false;
+		}
+		if (folder.equals(this.username) && coxDir != null) {
+			return false;
+		}
+		this.username = folder;
 		createFolders();
+		return true;
+	}
+
+	/** A directory name for one character. Blank, current, parent, and path characters are refused. */
+	static String accountFolderName(String username) {
+		if (username == null) {
+			return null;
+		}
+		String cleaned = username.replace('\u00A0', ' ').trim();
+		if (cleaned.isEmpty() || ".".equals(cleaned) || "..".equals(cleaned)) {
+			return null;
+		}
+		for (int i = 0; i < cleaned.length(); i++) {
+			char c = cleaned.charAt(i);
+			if (c < ' ' || "\\/:*?\"<>|".indexOf(c) >= 0) {
+				return null;
+			}
+		}
+		return cleaned;
 	}
 
 	// Used for making sure ToA loot and points is accurate
@@ -498,6 +539,9 @@ public class FileReadWriter {
 		try {
 			JsonParser parser = new JsonParser();
             String fileName = getRaidFileName(raidType);
+			if (fileName == null) {
+				return false;
+			}
 			ArrayList<RaidTracker> RTList = readFromFile(raidType);
 
 			FileWriter fw = new FileWriter(fileName, false); // the true will append the new data
@@ -590,6 +634,9 @@ public class FileReadWriter {
 		try {
 			JsonParser parser = new JsonParser();
             String fileName = getRaidFileName(raidType);
+			if (fileName == null) {
+				return;
+			}
 			FileWriter fw = new FileWriter(fileName, false); // the true will append the new data
 
 			for (RaidTracker RT : RTList) {
@@ -637,7 +684,11 @@ public class FileReadWriter {
 	}
 
 	private boolean deleteLog(RaidType raidType) {
-        File newFile = new File(getRaidFileName(raidType));
+		String fileName = getRaidFileName(raidType);
+		if (fileName == null) {
+			return false;
+		}
+        File newFile = new File(fileName);
 
 		boolean isDeleted = newFile.delete();
 
@@ -655,22 +706,31 @@ public class FileReadWriter {
 
     public String getRaidFileName(RaidType raidType) {
         final String DATA_FILE_NAME = "/raid_tracker_data.log";
-
+		String dir;
         if (raidType == null) {
-            return defaultDir + DATA_FILE_NAME;
-        }
-
-		switch(raidType) {
-            case COX:
-                return coxDir + DATA_FILE_NAME;
-			case TOB:
-                return tobDir + DATA_FILE_NAME;
-			case TOA:
-                return toaDir + DATA_FILE_NAME;
-			case TFA:
-				return tfaDir + DATA_FILE_NAME;
-            default:
-                return defaultDir + DATA_FILE_NAME;
+            dir = defaultDir;
+        } else {
+			switch (raidType) {
+				case COX:
+					dir = coxDir;
+					break;
+				case TOB:
+					dir = tobDir;
+					break;
+				case TOA:
+					dir = toaDir;
+					break;
+				case TFA:
+					dir = tfaDir;
+					break;
+				default:
+					dir = defaultDir;
+					break;
+			}
 		}
+		if (dir == null) {
+			return null;
+		}
+		return dir + DATA_FILE_NAME;
 	}
 }

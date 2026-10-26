@@ -167,6 +167,7 @@ public class RaidTrackerPlugin extends Plugin
 
 		if (client.getGameState().equals(GameState.LOGGED_IN) || client.getGameState().equals(GameState.LOADING))
 		{
+			bindAccountFolder();
 			SwingUtilities.invokeLater(() -> panel.loadRTList());
 		}
 	}
@@ -290,9 +291,8 @@ public class RaidTrackerPlugin extends Plugin
 
 		if (event.getGameState() == GameState.LOGGING_IN)
 		{
-			fw.updateUsername(client.getUsername());
-			SwingUtilities.invokeLater(() -> panel.loadRTList());
-
+			// The login name is often blank here. The character folder is set once the player exists.
+			bindAccountFolder();
 		}
 
 		if (client.getGameState() == GameState.LOGGED_IN) {
@@ -341,6 +341,7 @@ public class RaidTrackerPlugin extends Plugin
             isFirstGameTick = false;
             raidTracker.setProfileType(String.valueOf(RuneScapeProfileType.getCurrent(client)));
             raidTracker.setAccountHash(client.getAccountHash());
+            bindAccountFolder();
             SwingUtilities.invokeLater(() -> panel.loadRTList());
         }
 
@@ -1244,6 +1245,21 @@ public class RaidTrackerPlugin extends Plugin
 		RT.setKillCountID(raidTracker.getKillCountID());
 
 		return RT;
+	}
+
+	/** Use the character name, not the login name. A blank name must not select the shared plugin folder. */
+	private void bindAccountFolder() {
+		if (fw == null || client.getLocalPlayer() == null || client.getLocalPlayer().getName() == null) {
+			return;
+		}
+		String name = Text.toJagexName(client.getLocalPlayer().getName());
+		if (fw.updateUsername(name) && panel != null) {
+			SwingUtilities.invokeLater(() -> {
+				if (panel != null) {
+					panel.loadRTList();
+				}
+			});
+		}
 	}
 
 	/** The reward chest widget. Shutdown uses this so a restart can fill the raid that is still open. */

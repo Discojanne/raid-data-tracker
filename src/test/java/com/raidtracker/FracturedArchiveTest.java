@@ -77,6 +77,23 @@ public class FracturedArchiveTest extends TestCase
 	}
 
 	@Test
+	public void blankLoginDoesNotUseThePluginFolder() throws IOException
+	{
+		assertFalse(fw.updateUsername(""));
+		assertFalse(fw.updateUsername(null));
+		assertFalse(fw.updateUsername("   "));
+		assertFalse(fw.updateUsername(".."));
+		assertFalse(Files.exists(root.resolve("raid-data tracker").resolve("tfa")));
+		assertFalse(Files.exists(root.resolve("raid-data tracker").resolve("cox")));
+
+		assertTrue(fw.updateUsername("Disco Turtle"));
+		assertTrue(Files.exists(logFile()));
+		assertFalse(fw.updateUsername(""));
+		assertEquals(logFile().normalize(), Path.of(fw.getRaidFileName(RaidType.TFA)).normalize());
+		assertFalse(Files.exists(root.resolve("raid-data tracker").resolve("tfa")));
+	}
+
+	@Test
 	public void oneLineOmitsASkippedBoss() throws IOException
 	{
 		openAccount();
