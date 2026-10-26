@@ -20,6 +20,17 @@ public class RaidTracker {
 	boolean inTombsOfAmascut = false;
     boolean FreeForAll = false;
 
+    /** Player or default setting. "ffa" or "split". Absent means the cutoff still decides. */
+    public static final String SPLIT_CHOICE_FFA = "ffa";
+    public static final String SPLIT_CHOICE_SPLIT = "split";
+    String splitChoice;
+
+    /**
+     * The chest line is still accepting a teammate unique or a late chest.
+     * Absent once that window closes. Left off Chambers, Theatre, and Tombs lines.
+     */
+    Boolean openClaim;
+
     int upperTime = -1;
     int middleTime = -1;
     int lowerTime = -1;
@@ -56,6 +67,8 @@ public class RaidTracker {
     boolean petInMyName = false;
     long lootSplitReceived = -1;
     long lootSplitPaid = -1;
+    /** A typed Archive split amount. A later unique keeps it. Left off every log line. */
+    transient boolean splitAmountLocked;
     ArrayList<RaidTrackerItem> lootList = new ArrayList<>();
 
     int maidenTime = -1;
@@ -90,6 +103,27 @@ public class RaidTracker {
 	int zebakTime = -1;
 	int wardensTime = -1;
 	int toaCompTime = -1;
+
+    /** Folder flag for The Fractured Archive. Left off the log line. */
+    transient boolean inFracturedArchive = false;
+
+    /** Boss durations in seconds. A skipped fight stays null and is left out of the line. */
+    Integer archiveGuardianTime;
+    Integer ezekielTime;
+    Integer borkTime;
+    Integer moiaTime;
+    Integer dreadnothTime;
+    Integer dagonhaiTime;
+    Integer xarthTime;
+    Integer ocellusTime;
+
+    /** True when the local player was MVP. Absent from the log otherwise. */
+    Boolean ownMvp;
+
+    /** Team death total from the raid. Null on older lines. A raid with no deaths is 0. */
+    Integer deaths;
+
+    ArrayList<UniqueDrop> uniques;
 
     //Every RaidTracker has a unique uniqueID but not necessarily a unique killCountID, if there are multiple drops.
     String uniqueID = UUID.randomUUID().toString();
